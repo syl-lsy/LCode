@@ -33,7 +33,9 @@ jobs:
       - uses: actions/checkout@v7
 
       - name: 安装 uv（Python 3.14 + 依赖缓存）
-        uses: astral-sh/setup-uv@v10
+        # 钉具体版本：setup-uv 的 v8+ 没有发布浮动 major tag（v10/v9/v8 均解析不到），
+        # 写 @v10 会让 job 在 Set up job 的 Prepare actions 阶段整 job 失败（2026-10-17 首跑实测）。
+        uses: astral-sh/setup-uv@v10.3.0
         with:
           # 与根 .python-version / apps/server requires-python>=3.14 对齐（报告骨架的 "3.12" 是占位，此处定稿）
           python-version: "3.14"
