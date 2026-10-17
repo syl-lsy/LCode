@@ -1,0 +1,49 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "cost": {
+      "minimum": 0.0,
+      "title": "Cost",
+      "type": "number"
+    },
+    "currency": {
+      "default": "CNY",
+      "title": "Currency",
+      "type": "string"
+    },
+    "group_key": {
+      "title": "Group Key",
+      "type": "string"
+    },
+    "input_tokens": {
+      "minimum": 0,
+      "title": "Input Tokens",
+      "type": "integer"
+    },
+    "model_calls": {
+      "minimum": 0,
+      "title": "Model Calls",
+      "type": "integer"
+    },
+    "output_tokens": {
+      "minimum": 0,
+      "title": "Output Tokens",
+      "type": "integer"
+    },
+    "total_tokens": {
+      "minimum": 0,
+      "title": "Total Tokens",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "group_key",
+    "model_calls",
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "cost"
+  ],
+  "title": "CostSummaryRow",
+  "type": "object"
+}

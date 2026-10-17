@@ -1,0 +1,115 @@
+{
+  "$defs": {
+    "SessionDetail": {
+      "additionalProperties": false,
+      "properties": {
+        "approval_mode": {
+          "enum": [
+            "manual",
+            "auto"
+          ],
+          "title": "Approval Mode",
+          "type": "string"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "last_active_at": {
+          "format": "date-time",
+          "title": "Last Active At",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "reasoning_effort": {
+          "enum": [
+            "off",
+            "low",
+            "medium",
+            "high"
+          ],
+          "title": "Reasoning Effort",
+          "type": "string"
+        },
+        "run_state": {
+          "enum": [
+            "idle",
+            "running",
+            "waiting_approval"
+          ],
+          "title": "Run State",
+          "type": "string"
+        },
+        "sandbox_provider": {
+          "enum": [
+            "bailian",
+            "opensandbox"
+          ],
+          "title": "Sandbox Provider",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "active",
+            "archived"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "updated_at": {
+          "format": "date-time",
+          "title": "Updated At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "title",
+        "status",
+        "model",
+        "reasoning_effort",
+        "approval_mode",
+        "sandbox_provider",
+        "run_state",
+        "created_at",
+        "updated_at",
+        "last_active_at"
+      ],
+      "title": "SessionDetail",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "items": {
+      "items": {
+        "$ref": "#/$defs/SessionDetail"
+      },
+      "title": "Items",
+      "type": "array"
+    },
+    "total": {
+      "minimum": 0,
+      "title": "Total",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "items",
+    "total"
+  ],
+  "title": "SessionPage",
+  "type": "object"
+}

@@ -1,0 +1,191 @@
+{
+  "$defs": {
+    "AgentRef": {
+      "additionalProperties": false,
+      "description": "事件归属的子智能体标识；envelope.agent 为 null 表示主智能体。\n\n- agent_id：deepagents task() 派生的子线程标识\n- role：general-purpose / explorer / coder / reviewer 或 P1 自定义\n- spawned_by_tool_call_id：派生该子智能体的 task() 工具调用 id —— 前端用它把\n  主流中的 task() 工具卡片与子智能体进度面板（message_delta 兄弟流）关联",
+      "properties": {
+        "agent_id": {
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "parent_agent_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Agent Id"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Role"
+        },
+        "spawned_by_tool_call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Spawned By Tool Call Id"
+        }
+      },
+      "required": [
+        "agent_id"
+      ],
+      "title": "AgentRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "沙箱输出（REQ-002）：\n- channel=stdout/stderr：命令输出增量（终端标签实时滚动）。exec_id 关联发起命令\n  的工具调用（execute 类工具的 exec_id = tool_call_id；命令与退出码经\n  tool_call_finished.exit_code 补全）；\n- channel=lifecycle：沙箱生命周期（phase: creating/running/paused/resumed/\n  killed/crashed/recreated）——「沙箱暂停/恢复」状态可见性的载体（PRD §9）。",
+  "properties": {
+    "agent": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AgentRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "channel": {
+      "enum": [
+        "stdout",
+        "stderr",
+        "lifecycle"
+      ],
+      "title": "Channel",
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "data": {
+      "default": "",
+      "title": "Data",
+      "type": "string"
+    },
+    "exec_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Exec Id"
+    },
+    "phase": {
+      "anyOf": [
+        {
+          "enum": [
+            "creating",
+            "running",
+            "paused",
+            "resumed",
+            "killed",
+            "crashed",
+            "recreated"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Phase"
+    },
+    "provider": {
+      "anyOf": [
+        {
+          "enum": [
+            "bailian",
+            "opensandbox"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Provider"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason"
+    },
+    "run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Run Id"
+    },
+    "sandbox_id": {
+      "title": "Sandbox Id",
+      "type": "string"
+    },
+    "seq": {
+      "description": "会话内单调递增序号；SSE id 即此值",
+      "minimum": 0,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "type": {
+      "const": "sandbox_output",
+      "default": "sandbox_output",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "seq",
+    "session_id",
+    "created_at",
+    "sandbox_id",
+    "channel"
+  ],
+  "title": "SandboxOutputEvent",
+  "type": "object"
+}

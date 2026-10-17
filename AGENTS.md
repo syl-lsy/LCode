@@ -13,7 +13,7 @@ LCode 是**个人开发项目**：ZCode 风格的交互式 Coding Agent，定位
 
 **产品形态**：Web 应用。客户端路线图：Web（主）→ Electron 套壳 Desktop → CLI 轻客户端（可选）→ TUI（三期，届时再定"云端看板 vs 本地执行版"）。
 
-**当前状态**：决策基线冻结；**PRD 已定稿**（`docs/PRD.md`，增量 diff 演进，已确认（2026-10-17），进入 M1）。仓库代码仍未初始化，首个里程碑 M1 = 仓库初始化 + `contracts/` 契约冻结 + 质量门禁工具链就位。所有架构决策已冻结为基线，改动需用户确认。
+**当前状态**：决策基线冻结；**PRD 已定稿**（`docs/PRD.md` v1.7，增量 diff 演进，已确认 2026-10-17）。仓库已初始化（基线 tag `m1-start`）；**M1 进行中**：阶段 1 契约产出已落盘（`contracts/` 五域 + 自校验 harness、`docs/adr/ADR-001~003`，待用户评审冻结），随后进入质量门禁工具链搭建与双端脚手架。所有架构决策已冻结为基线，改动需用户确认。
 
 ## 技术栈（冻结基线）
 
@@ -41,7 +41,7 @@ LCode 是**个人开发项目**：ZCode 风格的交互式 Coding Agent，定位
 |---|---|
 | `get_llm(role)` | 模型工厂唯一入口；优先级：请求级 > 会话级 > 角色级 > 模型默认。配置在 `config/models.yaml` |
 | `SandboxClient` | 沙箱抽象，接口设计**必须先对齐 deepagents `backends/protocol.py` 的方法面**，桥接适配器保持薄翻译；双实现 `bailian`（E2B 协议）/ `opensandbox`（自有协议），provider 由配置开关一键切换（切换粒度在 M1 契约定稿），新增 provider = 新增一个实现类，不改上层 |
-| 事件协议 | 所有客户端/面板只消费自定义领域事件（`message_delta / tool_call_* / approval_request / diff_ready / sandbox_output / browser_action`），不透传 LangGraph 原始事件 |
+| 事件协议 | 所有客户端/面板只消费自定义领域事件（`message_delta / tool_call_* / approval_request / diff_ready / sandbox_output / browser_action`），不透传 LangGraph 原始事件；字段级定义以 `contracts/src/lcode_contracts/events.py` 为准（Q5 定稿，含 run_status 运行状态族） |
 | Agent 扩展点 | 唯一机制 = middleware 栈（`create_deep_agent(middleware=[...])`；name 合并/替换语义见快照 `graph.py` 的 `_apply_custom_middleware`）；LCode 业务 middleware 清单与顺序在 M1 ADR「扩展性与 hooks」冻结；P1 hooks = HookBridgeMiddleware 读 `~/.lcode/hooks.json`（REQ-108），插件系统不排期（REQ-109 P2 占位，工具扩展走 MCP） |
 | 记忆与持久化 | 双轨（REQ-004 约束）：短期 = LangGraph checkpointer（`AsyncPostgresSaver`，thread_id=会话 ID）**仅运行时断点恢复**，审批 interrupt 依赖它；长期 = REQ-101 三件套（自有表 + pgvector），SDK `StoreBackend` 桥 PostgresStore（namespace 按用户隔离）；**业务事实源 = 自有表**，禁止从 checkpoint 反序列化做展示/审计；`InMemorySaver`/`InMemoryStore` 仅 pytest 用 |
 
@@ -83,4 +83,4 @@ LCode 是**个人开发项目**：ZCode 风格的交互式 Coding Agent，定位
 
 ## 构建命令
 
-（待仓库初始化后补充：dev / lint / typecheck / test）
+（M1 阶段 1 已就位：`make -C contracts check` 契约自校验 / `make -C contracts gen` 重新生成契约产物；根 Makefile（dev / lint / typecheck / test / ci）待阶段 2 双端脚手架建立后补充）

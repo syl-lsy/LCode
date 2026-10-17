@@ -1,0 +1,25 @@
+{
+  "additionalProperties": false,
+  "description": "todo 条目（REQ-005）。todo 面板数据源 = 最近一次 write_todos 工具调用的快照。",
+  "properties": {
+    "content": {
+      "title": "Content",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "pending",
+        "in_progress",
+        "completed"
+      ],
+      "title": "Status",
+      "type": "string"
+    }
+  },
+  "required": [
+    "content",
+    "status"
+  ],
+  "title": "TodoItem",
+  "type": "object"
+}

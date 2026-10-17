@@ -1,0 +1,265 @@
+{
+  "$defs": {
+    "AgentRef": {
+      "additionalProperties": false,
+      "description": "事件归属的子智能体标识；envelope.agent 为 null 表示主智能体。\n\n- agent_id：deepagents task() 派生的子线程标识\n- role：general-purpose / explorer / coder / reviewer 或 P1 自定义\n- spawned_by_tool_call_id：派生该子智能体的 task() 工具调用 id —— 前端用它把\n  主流中的 task() 工具卡片与子智能体进度面板（message_delta 兄弟流）关联",
+      "properties": {
+        "agent_id": {
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "parent_agent_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Agent Id"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Role"
+        },
+        "spawned_by_tool_call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Spawned By Tool Call Id"
+        }
+      },
+      "required": [
+        "agent_id"
+      ],
+      "title": "AgentRef",
+      "type": "object"
+    },
+    "TodoItem": {
+      "additionalProperties": false,
+      "description": "todo 条目（REQ-005）。todo 面板数据源 = 最近一次 write_todos 工具调用的快照。",
+      "properties": {
+        "content": {
+          "title": "Content",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "in_progress",
+            "completed"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "content",
+        "status"
+      ],
+      "title": "TodoItem",
+      "type": "object"
+    },
+    "ToolErrorObj": {
+      "additionalProperties": false,
+      "description": "事件侧工具错误对象（tool_call_finished / browser_action）。",
+      "properties": {
+        "code": {
+          "enum": [
+            "timeout",
+            "sandbox_unavailable",
+            "param_invalid",
+            "not_found",
+            "permission_denied",
+            "mcp_transport_error",
+            "mcp_tool_error",
+            "cancelled",
+            "internal"
+          ],
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "retryable": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Retryable"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "title": "ToolErrorObj",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "工具调用结束（卡片补全：出参摘要 + 状态，AC-003-2）。\n\n- error 双通道原则（调研 §4.2）：给模型仍走 ToolMessage；本事件面向 UI/落库，\n  带 status/error{code,message,retryable}/truncated/duration_ms；\n- exit_code：execute 类命令退出码（非 0 不代表 status=error —— deepagents\n  口径：命令跑了就是 success，读 exit_code 判断命令失败）；\n- todos：tool=write_todos 时携带全量 todo 快照（REQ-005 面板数据源）；\n- result_ref：大结果被 offload 后的沙箱内落盘引用（AC-010-2 留痕）。",
+  "properties": {
+    "agent": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AgentRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "duration_ms": {
+      "minimum": 0,
+      "title": "Duration Ms",
+      "type": "integer"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/ToolErrorObj"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "exit_code": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Exit Code"
+    },
+    "result_preview": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Result Preview"
+    },
+    "result_ref": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Result Ref"
+    },
+    "run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Run Id"
+    },
+    "seq": {
+      "description": "会话内单调递增序号；SSE id 即此值",
+      "minimum": 0,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "success",
+        "error"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "todos": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/TodoItem"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Todos"
+    },
+    "tool_call_id": {
+      "title": "Tool Call Id",
+      "type": "string"
+    },
+    "truncated": {
+      "default": false,
+      "title": "Truncated",
+      "type": "boolean"
+    },
+    "type": {
+      "const": "tool_call_finished",
+      "default": "tool_call_finished",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "seq",
+    "session_id",
+    "created_at",
+    "tool_call_id",
+    "status",
+    "duration_ms"
+  ],
+  "title": "ToolCallFinishedEvent",
+  "type": "object"
+}

@@ -1,0 +1,2 @@
+import { z } from "zod";
+export const MessageCreatedEventSchema = z.object({ "agent": z.union([z.any(), z.null()]).default(null), "content": z.string(), "created_at": z.string().datetime({ offset: true }), "message_id": z.string(), "role": z.literal("user").default("user"), "run_id": z.union([z.string(), z.null()]).default(null), "seq": z.number().int().gte(0).describe("会话内单调递增序号；SSE id 即此值"), "session_id": z.string(), "type": z.literal("message_created").default("message_created") }).strict().describe("用户消息回声：落库后、run 启动前发出（多端一致 + 纯事件回放可重建，AC-008-3）。")

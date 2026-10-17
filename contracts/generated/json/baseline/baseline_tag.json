@@ -1,0 +1,25 @@
+{
+  "additionalProperties": false,
+  "description": "合法 tag 的机器表达：kind=init 当且仅当 round=0。",
+  "properties": {
+    "kind": {
+      "enum": [
+        "init",
+        "accepted"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "round": {
+      "minimum": 0,
+      "title": "Round",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "round",
+    "kind"
+  ],
+  "title": "BaselineTag",
+  "type": "object"
+}

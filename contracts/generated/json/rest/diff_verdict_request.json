@@ -1,0 +1,30 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "feedback": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Feedback"
+    },
+    "verdict": {
+      "enum": [
+        "accepted",
+        "rejected"
+      ],
+      "title": "Verdict",
+      "type": "string"
+    }
+  },
+  "required": [
+    "verdict"
+  ],
+  "title": "DiffVerdictRequest",
+  "type": "object"
+}

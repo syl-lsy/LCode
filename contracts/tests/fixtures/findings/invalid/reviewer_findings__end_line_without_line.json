@@ -1,0 +1,14 @@
+{
+  "schema_version": "1",
+  "summary": "end_line 不得脱离 line 单独出现（文件级问题两者都应为 null）。",
+  "findings": [
+    {
+      "file": "src/auth/session.py",
+      "end_line": 48,
+      "severity": "high",
+      "category": "security",
+      "title": "access_token 过期后未刷新",
+      "description": "刷新逻辑只在登录时执行。"
+    }
+  ]
+}

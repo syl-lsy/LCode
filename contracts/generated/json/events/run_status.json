@@ -1,0 +1,240 @@
+{
+  "$defs": {
+    "AgentRef": {
+      "additionalProperties": false,
+      "description": "事件归属的子智能体标识；envelope.agent 为 null 表示主智能体。\n\n- agent_id：deepagents task() 派生的子线程标识\n- role：general-purpose / explorer / coder / reviewer 或 P1 自定义\n- spawned_by_tool_call_id：派生该子智能体的 task() 工具调用 id —— 前端用它把\n  主流中的 task() 工具卡片与子智能体进度面板（message_delta 兄弟流）关联",
+      "properties": {
+        "agent_id": {
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "parent_agent_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Agent Id"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Role"
+        },
+        "spawned_by_tool_call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Spawned By Tool Call Id"
+        }
+      },
+      "required": [
+        "agent_id"
+      ],
+      "title": "AgentRef",
+      "type": "object"
+    },
+    "CompactInfo": {
+      "additionalProperties": false,
+      "description": "上下文压缩前后窗口占用（REQ-010 / AC-010-1 界面提示）。",
+      "properties": {
+        "after_tokens": {
+          "title": "After Tokens",
+          "type": "integer"
+        },
+        "before_tokens": {
+          "title": "Before Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "before_tokens",
+        "after_tokens"
+      ],
+      "title": "CompactInfo",
+      "type": "object"
+    },
+    "RunErrorObj": {
+      "additionalProperties": false,
+      "description": "事件侧运行错误对象（run_status phase=error）。",
+      "properties": {
+        "code": {
+          "enum": [
+            "model_error",
+            "rate_limited",
+            "context_window_exceeded",
+            "cancelled_by_user",
+            "internal"
+          ],
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "retryable": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Retryable"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "title": "RunErrorObj",
+      "type": "object"
+    },
+    "Usage": {
+      "additionalProperties": false,
+      "description": "token 用量快照。口径（PRD 硬约束 9）：思考系模型的推理 token 计入 output。",
+      "properties": {
+        "input_tokens": {
+          "default": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "default": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        }
+      },
+      "title": "Usage",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "运行/压缩状态（Q5 定稿新增族）：\n\n- subject=run：phase started/finished/stopped/error（停止与错误路径的 UI 状态机\n  信号，AC-001-2 / NFR-006；无法从消息族可靠推导）；\n- subject=compact：phase started/finished（上下文压缩提示，AC-010-1），\n  finished 时必须带 compact 前后窗口占用。",
+  "properties": {
+    "agent": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AgentRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "compact": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CompactInfo"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "error": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RunErrorObj"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "phase": {
+      "enum": [
+        "started",
+        "finished",
+        "stopped",
+        "error"
+      ],
+      "title": "Phase",
+      "type": "string"
+    },
+    "run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Run Id"
+    },
+    "seq": {
+      "description": "会话内单调递增序号；SSE id 即此值",
+      "minimum": 0,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "subject": {
+      "enum": [
+        "run",
+        "compact"
+      ],
+      "title": "Subject",
+      "type": "string"
+    },
+    "type": {
+      "const": "run_status",
+      "default": "run_status",
+      "title": "Type",
+      "type": "string"
+    },
+    "usage_totals": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Usage"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "seq",
+    "session_id",
+    "created_at",
+    "subject",
+    "phase"
+  ],
+  "title": "RunStatusEvent",
+  "type": "object"
+}

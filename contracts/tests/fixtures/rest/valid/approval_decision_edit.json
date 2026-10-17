@@ -1,0 +1,9 @@
+{
+  "decision": "edit",
+  "scope": "once",
+  "edited_args": {
+    "command": "rm -rf dist/",
+    "timeout": 120
+  },
+  "feedback": null
+}

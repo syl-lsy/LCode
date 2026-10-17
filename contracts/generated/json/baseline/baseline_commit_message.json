@@ -1,0 +1,37 @@
+{
+  "additionalProperties": false,
+  "description": "基线提交消息的机器表达与双向转换（render/parse）。",
+  "properties": {
+    "kind": {
+      "enum": [
+        "init",
+        "accepted"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "note": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Note"
+    },
+    "round": {
+      "minimum": 0,
+      "title": "Round",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "kind",
+    "round"
+  ],
+  "title": "BaselineCommitMessage",
+  "type": "object"
+}

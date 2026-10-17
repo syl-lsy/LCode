@@ -1,0 +1,32 @@
+{
+  "schema_version": "1",
+  "summary": "src/auth/ 共 6 个文件：1 处高危（token 刷新缺失）、1 处中危（明文日志）。",
+  "findings": [
+    {
+      "file": "src/auth/session.py",
+      "line": 42,
+      "end_line": 48,
+      "severity": "high",
+      "category": "security",
+      "title": "access_token 过期后未刷新",
+      "description": "刷新逻辑只在登录时执行，401 后没有触发 refresh_flow。",
+      "evidence": "def refresh_if_needed(): pass",
+      "suggestion": "在 401 拦截器中触发 refresh_flow 并重放原请求",
+      "confidence": "high"
+    },
+    {
+      "file": "src/auth/logger.py",
+      "line": 17,
+      "severity": "medium",
+      "category": "security",
+      "title": "token 写入明文日志",
+      "description": "logger.debug 直接输出完整 bearer token。",
+      "confidence": "medium"
+    }
+  ],
+  "coverage": {
+    "files_reviewed": 6,
+    "files_skipped": ["src/auth/legacy.py"],
+    "notes": null
+  }
+}

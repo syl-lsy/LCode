@@ -1,0 +1,14 @@
+{
+  "schema_version": "1",
+  "summary": "line 为 1 起始行号，0 非法。",
+  "findings": [
+    {
+      "file": "src/auth/session.py",
+      "line": 0,
+      "severity": "high",
+      "category": "security",
+      "title": "access_token 过期后未刷新",
+      "description": "刷新逻辑只在登录时执行。"
+    }
+  ]
+}

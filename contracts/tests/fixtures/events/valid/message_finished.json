@@ -1,0 +1,56 @@
+{
+  "seq": 131,
+  "session_id": "0192f0a1-1111-4a1a-9c2d-000000000001",
+  "run_id": "0192f0a1-2222-4a1a-9c2d-000000000002",
+  "agent": {
+    "agent_id": "task_7",
+    "role": "reviewer",
+    "parent_agent_id": null,
+    "spawned_by_tool_call_id": "call_5"
+  },
+  "created_at": "2026-10-17T09:31:20.000001+00:00",
+  "type": "message_finished",
+  "message_id": "0192f0a1-4444-4a1a-9c2d-000000000004",
+  "role": "assistant",
+  "finish_reason": "stop",
+  "usage": {
+    "input_tokens": 5200,
+    "output_tokens": 1100
+  },
+  "structured": {
+    "schema_name": "reviewer_findings",
+    "status": "ok",
+    "data": {
+      "schema_version": "1",
+      "summary": "src/auth/ 共 6 个文件：1 处高危（token 刷新缺失）、1 处中危（明文日志）。",
+      "findings": [
+        {
+          "file": "src/auth/session.py",
+          "line": 42,
+          "end_line": 48,
+          "severity": "high",
+          "category": "security",
+          "title": "access_token 过期后未刷新",
+          "description": "刷新逻辑只在登录时执行，401 后没有触发 refresh_flow。",
+          "evidence": "def refresh_if_needed(): pass",
+          "suggestion": "在 401 拦截器中触发 refresh_flow 并重放原请求",
+          "confidence": "high"
+        },
+        {
+          "file": "src/auth/logger.py",
+          "line": 17,
+          "severity": "medium",
+          "category": "security",
+          "title": "token 写入明文日志",
+          "description": "logger.debug 直接输出完整 bearer token。",
+          "confidence": "medium"
+        }
+      ],
+      "coverage": {
+        "files_reviewed": 6,
+        "files_skipped": ["src/auth/legacy.py"],
+        "notes": null
+      }
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "event_seq": {
+      "minimum": 0,
+      "title": "Event Seq",
+      "type": "integer"
+    },
+    "message_id": {
+      "title": "Message Id",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "message_id",
+    "run_id",
+    "event_seq"
+  ],
+  "title": "MessageSendAck",
+  "type": "object"
+}

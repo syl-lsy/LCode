@@ -1,0 +1,143 @@
+{
+  "$defs": {
+    "AgentRef": {
+      "additionalProperties": false,
+      "description": "事件归属的子智能体标识；envelope.agent 为 null 表示主智能体。\n\n- agent_id：deepagents task() 派生的子线程标识\n- role：general-purpose / explorer / coder / reviewer 或 P1 自定义\n- spawned_by_tool_call_id：派生该子智能体的 task() 工具调用 id —— 前端用它把\n  主流中的 task() 工具卡片与子智能体进度面板（message_delta 兄弟流）关联",
+      "properties": {
+        "agent_id": {
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "parent_agent_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Agent Id"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Role"
+        },
+        "spawned_by_tool_call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Spawned By Tool Call Id"
+        }
+      },
+      "required": [
+        "agent_id"
+      ],
+      "title": "AgentRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "工具调用开始（卡片出现：工具名 + 完整入参，AC-003-2）。",
+  "properties": {
+    "agent": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AgentRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "args": {
+      "additionalProperties": true,
+      "title": "Args",
+      "type": "object"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "risk_level": {
+      "anyOf": [
+        {
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ],
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Risk Level"
+    },
+    "run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Run Id"
+    },
+    "seq": {
+      "description": "会话内单调递增序号；SSE id 即此值",
+      "minimum": 0,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "tool": {
+      "title": "Tool",
+      "type": "string"
+    },
+    "tool_call_id": {
+      "title": "Tool Call Id",
+      "type": "string"
+    },
+    "type": {
+      "const": "tool_call_started",
+      "default": "tool_call_started",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "seq",
+    "session_id",
+    "created_at",
+    "tool_call_id",
+    "tool",
+    "args"
+  ],
+  "title": "ToolCallStartedEvent",
+  "type": "object"
+}

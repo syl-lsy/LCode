@@ -1,0 +1,23 @@
+{
+  "dimension": "session",
+  "rows": [
+    {
+      "group_key": "0192f0a1-1111-4a1a-9c2d-000000000001",
+      "model_calls": 42,
+      "input_tokens": 210340,
+      "output_tokens": 38210,
+      "total_tokens": 248550,
+      "cost": 1.86,
+      "currency": "CNY"
+    },
+    {
+      "group_key": "0192f0a1-7777-4a1a-9c2d-000000000007",
+      "model_calls": 11,
+      "input_tokens": 40120,
+      "output_tokens": 9014,
+      "total_tokens": 49134,
+      "cost": 0.37,
+      "currency": "CNY"
+    }
+  ]
+}

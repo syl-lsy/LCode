@@ -1,0 +1,12 @@
+{
+  "seq": 130,
+  "session_id": "0192f0a1-1111-4a1a-9c2d-000000000001",
+  "run_id": "0192f0a1-2222-4a1a-9c2d-000000000002",
+  "created_at": "2026-10-17T09:31:15.000000+00:00",
+  "type": "approval_resolved",
+  "approval_id": "0192f0a1-5555-4a1a-9c2d-000000000005",
+  "decision": "edit",
+  "scope": "once",
+  "feedback": null,
+  "decided_by": "local"
+}

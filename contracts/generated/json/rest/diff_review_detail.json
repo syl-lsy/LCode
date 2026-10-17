@@ -1,0 +1,201 @@
+{
+  "$defs": {
+    "BaselineRef": {
+      "additionalProperties": false,
+      "description": "diff 对照基线引用（REQ-007 / AC-007-1/4）。\n\nkind 语义：head=输入仓库自身历史（不做 git 操作）；init=非 git 输入的\n[lcode-baseline] 初始提交（round-0）；accepted=上轮已接受后创建的基线提交。",
+      "properties": {
+        "commit": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Commit",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "head",
+            "init",
+            "accepted"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "ref": {
+          "title": "Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "ref",
+        "commit"
+      ],
+      "title": "BaselineRef",
+      "type": "object"
+    },
+    "DiffFileSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "additions": {
+          "minimum": 0,
+          "title": "Additions",
+          "type": "integer"
+        },
+        "binary": {
+          "default": false,
+          "title": "Binary",
+          "type": "boolean"
+        },
+        "change": {
+          "enum": [
+            "added",
+            "modified",
+            "deleted",
+            "renamed"
+          ],
+          "title": "Change",
+          "type": "string"
+        },
+        "deletions": {
+          "minimum": 0,
+          "title": "Deletions",
+          "type": "integer"
+        },
+        "old_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Old Path"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "change",
+        "additions",
+        "deletions"
+      ],
+      "title": "DiffFileSummary",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "additions_total": {
+      "minimum": 0,
+      "title": "Additions Total",
+      "type": "integer"
+    },
+    "baseline": {
+      "$ref": "#/$defs/BaselineRef"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "decided_by": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Decided By"
+    },
+    "deletions_total": {
+      "minimum": 0,
+      "title": "Deletions Total",
+      "type": "integer"
+    },
+    "feedback": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Feedback"
+    },
+    "files": {
+      "items": {
+        "$ref": "#/$defs/DiffFileSummary"
+      },
+      "title": "Files",
+      "type": "array"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "resolved_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Resolved At"
+    },
+    "round": {
+      "minimum": 1,
+      "title": "Round",
+      "type": "integer"
+    },
+    "run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Run Id"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "verdict": {
+      "enum": [
+        "pending",
+        "accepted",
+        "rejected"
+      ],
+      "title": "Verdict",
+      "type": "string"
+    }
+  },
+  "required": [
+    "id",
+    "session_id",
+    "round",
+    "verdict",
+    "baseline",
+    "files",
+    "additions_total",
+    "deletions_total",
+    "created_at"
+  ],
+  "title": "DiffReviewDetail",
+  "type": "object"
+}

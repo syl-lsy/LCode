@@ -1,0 +1,2 @@
+import { z } from "zod";
+export const MessageItemSchema = z.object({ "agent_id": z.union([z.string(), z.null()]).default(null), "content": z.string(), "created_at": z.string().datetime({ offset: true }), "finish_reason": z.union([z.string(), z.null()]).default(null), "id": z.string(), "role": z.enum(["user","assistant"]), "run_id": z.union([z.string(), z.null()]).default(null), "structured": z.union([z.any(), z.null()]).default(null) }).strict()

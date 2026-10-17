@@ -1,0 +1,18 @@
+{
+  "seq": 110,
+  "session_id": "0192f0a1-1111-4a1a-9c2d-000000000001",
+  "run_id": "0192f0a1-2222-4a1a-9c2d-000000000002",
+  "created_at": "2026-10-17T09:30:03.500000+00:00",
+  "type": "tool_call_finished",
+  "tool_call_id": "call_d4e5f6",
+  "status": "success",
+  "duration_ms": 120,
+  "result_preview": "Todo list updated (4 items)",
+  "truncated": false,
+  "todos": [
+    { "content": "克隆仓库", "status": "completed" },
+    { "content": "定位超时根因", "status": "completed" },
+    { "content": "修改 auth.py", "status": "in_progress" },
+    { "content": "跑 pytest", "status": "pending" }
+  ]
+}

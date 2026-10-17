@@ -1,0 +1,18 @@
+{
+  "additionalProperties": false,
+  "description": "token 用量快照。口径（PRD 硬约束 9）：思考系模型的推理 token 计入 output。",
+  "properties": {
+    "input_tokens": {
+      "default": 0,
+      "title": "Input Tokens",
+      "type": "integer"
+    },
+    "output_tokens": {
+      "default": 0,
+      "title": "Output Tokens",
+      "type": "integer"
+    }
+  },
+  "title": "Usage",
+  "type": "object"
+}

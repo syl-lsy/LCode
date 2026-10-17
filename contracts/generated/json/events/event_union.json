@@ -1,0 +1,1788 @@
+{
+  "$defs": {
+    "AgentRef": {
+      "additionalProperties": false,
+      "description": "事件归属的子智能体标识；envelope.agent 为 null 表示主智能体。\n\n- agent_id：deepagents task() 派生的子线程标识\n- role：general-purpose / explorer / coder / reviewer 或 P1 自定义\n- spawned_by_tool_call_id：派生该子智能体的 task() 工具调用 id —— 前端用它把\n  主流中的 task() 工具卡片与子智能体进度面板（message_delta 兄弟流）关联",
+      "properties": {
+        "agent_id": {
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "parent_agent_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Agent Id"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Role"
+        },
+        "spawned_by_tool_call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Spawned By Tool Call Id"
+        }
+      },
+      "required": [
+        "agent_id"
+      ],
+      "title": "AgentRef",
+      "type": "object"
+    },
+    "ApprovalRequestEvent": {
+      "additionalProperties": false,
+      "description": "审批请求（REQ-006）：四决策 approve/edit/reject/respond 经 REST 决策端点提交。\n\n不超时自动放行（AC-006-5）：本事件无过期语义；挂起态跨刷新由 approvals 表恢复。",
+      "properties": {
+        "agent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "approval_id": {
+          "title": "Approval Id",
+          "type": "string"
+        },
+        "args": {
+          "additionalProperties": true,
+          "title": "Args",
+          "type": "object"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "risk_level": {
+          "enum": [
+            "medium",
+            "high"
+          ],
+          "title": "Risk Level",
+          "type": "string"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run Id"
+        },
+        "seq": {
+          "description": "会话内单调递增序号；SSE id 即此值",
+          "minimum": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "tool": {
+          "title": "Tool",
+          "type": "string"
+        },
+        "tool_call_id": {
+          "title": "Tool Call Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "approval_request",
+          "default": "approval_request",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "seq",
+        "session_id",
+        "created_at",
+        "approval_id",
+        "tool_call_id",
+        "tool",
+        "args",
+        "risk_level"
+      ],
+      "title": "ApprovalRequestEvent",
+      "type": "object"
+    },
+    "ApprovalResolvedEvent": {
+      "additionalProperties": false,
+      "description": "审批决策回声（决策经 POST /approvals/{id}/decide 落库后广播）。\n\n用途：多标签页一致 + 纯事件回放可重建审批卡片终态（AC-008-3/AC-004-4）。",
+      "properties": {
+        "agent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "approval_id": {
+          "title": "Approval Id",
+          "type": "string"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "decided_by": {
+          "title": "Decided By",
+          "type": "string"
+        },
+        "decision": {
+          "enum": [
+            "approve",
+            "edit",
+            "reject",
+            "respond"
+          ],
+          "title": "Decision",
+          "type": "string"
+        },
+        "edited_args": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Edited Args"
+        },
+        "feedback": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Feedback"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run Id"
+        },
+        "scope": {
+          "default": "once",
+          "enum": [
+            "once",
+            "session"
+          ],
+          "title": "Scope",
+          "type": "string"
+        },
+        "seq": {
+          "description": "会话内单调递增序号；SSE id 即此值",
+          "minimum": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "approval_resolved",
+          "default": "approval_resolved",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "seq",
+        "session_id",
+        "created_at",
+        "approval_id",
+        "decision",
+        "decided_by"
+      ],
+      "title": "ApprovalResolvedEvent",
+      "type": "object"
+    },
+    "BaselineRef": {
+      "additionalProperties": false,
+      "description": "diff 对照基线引用（REQ-007 / AC-007-1/4）。\n\nkind 语义：head=输入仓库自身历史（不做 git 操作）；init=非 git 输入的\n[lcode-baseline] 初始提交（round-0）；accepted=上轮已接受后创建的基线提交。",
+      "properties": {
+        "commit": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Commit",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "head",
+            "init",
+            "accepted"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "ref": {
+          "title": "Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "ref",
+        "commit"
+      ],
+      "title": "BaselineRef",
+      "type": "object"
+    },
+    "BrowserActionEvent": {
+      "additionalProperties": false,
+      "description": "浏览器动作（REQ-102 / 场景 F）。P1 占位：P0 服务端不得产出本事件；\nschema 先行冻结以稳定契约，前端 P0 不实现消费端。",
+      "properties": {
+        "action": {
+          "title": "Action",
+          "type": "string"
+        },
+        "agent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolErrorObj"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run Id"
+        },
+        "screenshot_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Screenshot Ref"
+        },
+        "seq": {
+          "description": "会话内单调递增序号；SSE id 即此值",
+          "minimum": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "started",
+            "finished",
+            "error"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "type": {
+          "const": "browser_action",
+          "default": "browser_action",
+          "title": "Type",
+          "type": "string"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        }
+      },
+      "required": [
+        "seq",
+        "session_id",
+        "created_at",
+        "action",
+        "status"
+      ],
+      "title": "BrowserActionEvent",
+      "type": "object"
+    },
+    "CompactInfo": {
+      "additionalProperties": false,
+      "description": "上下文压缩前后窗口占用（REQ-010 / AC-010-1 界面提示）。",
+      "properties": {
+        "after_tokens": {
+          "title": "After Tokens",
+          "type": "integer"
+        },
+        "before_tokens": {
+          "title": "Before Tokens",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "before_tokens",
+        "after_tokens"
+      ],
+      "title": "CompactInfo",
+      "type": "object"
+    },
+    "Coverage": {
+      "additionalProperties": false,
+      "description": "审查覆盖面（扇出场景下部分失败要如实呈现，AC-009-4）。",
+      "properties": {
+        "files_reviewed": {
+          "default": 0,
+          "minimum": 0,
+          "title": "Files Reviewed",
+          "type": "integer"
+        },
+        "files_skipped": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Files Skipped",
+          "type": "array"
+        },
+        "notes": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Notes"
+        }
+      },
+      "title": "Coverage",
+      "type": "object"
+    },
+    "DiffFileSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "additions": {
+          "minimum": 0,
+          "title": "Additions",
+          "type": "integer"
+        },
+        "binary": {
+          "default": false,
+          "title": "Binary",
+          "type": "boolean"
+        },
+        "change": {
+          "enum": [
+            "added",
+            "modified",
+            "deleted",
+            "renamed"
+          ],
+          "title": "Change",
+          "type": "string"
+        },
+        "deletions": {
+          "minimum": 0,
+          "title": "Deletions",
+          "type": "integer"
+        },
+        "old_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Old Path"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "change",
+        "additions",
+        "deletions"
+      ],
+      "title": "DiffFileSummary",
+      "type": "object"
+    },
+    "DiffReadyEvent": {
+      "additionalProperties": false,
+      "description": "diff 就绪（REQ-007）：摘要走事件，逐文件完整 patch 走 REST（patch_ref）。\n\n新建文件须纳入 diff（git add -N 口径，AC-007-1）；totals 与 files 求和一致\n是诚实性强校验（F15：完成态呈现以 diff_ready 事实为准）。",
+      "properties": {
+        "additions_total": {
+          "minimum": 0,
+          "title": "Additions Total",
+          "type": "integer"
+        },
+        "agent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "baseline": {
+          "$ref": "#/$defs/BaselineRef"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "deletions_total": {
+          "minimum": 0,
+          "title": "Deletions Total",
+          "type": "integer"
+        },
+        "files": {
+          "items": {
+            "$ref": "#/$defs/DiffFileSummary"
+          },
+          "minItems": 1,
+          "title": "Files",
+          "type": "array"
+        },
+        "patch_ref": {
+          "title": "Patch Ref",
+          "type": "string"
+        },
+        "review_id": {
+          "title": "Review Id",
+          "type": "string"
+        },
+        "round": {
+          "minimum": 1,
+          "title": "Round",
+          "type": "integer"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run Id"
+        },
+        "seq": {
+          "description": "会话内单调递增序号；SSE id 即此值",
+          "minimum": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "diff_ready",
+          "default": "diff_ready",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "seq",
+        "session_id",
+        "created_at",
+        "review_id",
+        "round",
+        "baseline",
+        "files",
+        "additions_total",
+        "deletions_total",
+        "patch_ref"
+      ],
+      "title": "DiffReadyEvent",
+      "type": "object"
+    },
+    "DiffResolvedEvent": {
+      "additionalProperties": false,
+      "description": "diff 裁决回声（AC-007-3）：accepted 后端创建基线提交成为下一轮对照（AC-007-4）。",
+      "properties": {
+        "agent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "decided_by": {
+          "title": "Decided By",
+          "type": "string"
+        },
+        "feedback": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Feedback"
+        },
+        "review_id": {
+          "title": "Review Id",
+          "type": "string"
+        },
+        "round": {
+          "minimum": 1,
+          "title": "Round",
+          "type": "integer"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run Id"
+        },
+        "seq": {
+          "description": "会话内单调递增序号；SSE id 即此值",
+          "minimum": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "diff_resolved",
+          "default": "diff_resolved",
+          "title": "Type",
+          "type": "string"
+        },
+        "verdict": {
+          "enum": [
+            "accepted",
+            "rejected"
+          ],
+          "title": "Verdict",
+          "type": "string"
+        }
+      },
+      "required": [
+        "seq",
+        "session_id",
+        "created_at",
+        "review_id",
+        "round",
+        "verdict",
+        "decided_by"
+      ],
+      "title": "DiffResolvedEvent",
+      "type": "object"
+    },
+    "Finding": {
+      "additionalProperties": false,
+      "description": "单条发现。line/end_line 为 1 起始行号；文件级问题（无行号）两者皆 null。",
+      "properties": {
+        "category": {
+          "enum": [
+            "security",
+            "correctness",
+            "performance",
+            "maintainability",
+            "style"
+          ],
+          "title": "Category",
+          "type": "string"
+        },
+        "confidence": {
+          "default": "medium",
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ],
+          "title": "Confidence",
+          "type": "string"
+        },
+        "description": {
+          "title": "Description",
+          "type": "string"
+        },
+        "end_line": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End Line"
+        },
+        "evidence": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence"
+        },
+        "file": {
+          "title": "File",
+          "type": "string"
+        },
+        "line": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line"
+        },
+        "severity": {
+          "enum": [
+            "critical",
+            "high",
+            "medium",
+            "low",
+            "info"
+          ],
+          "title": "Severity",
+          "type": "string"
+        },
+        "suggestion": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Suggestion"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "file",
+        "severity",
+        "category",
+        "title",
+        "description"
+      ],
+      "title": "Finding",
+      "type": "object"
+    },
+    "MessageCreatedEvent": {
+      "additionalProperties": false,
+      "description": "用户消息回声：落库后、run 启动前发出（多端一致 + 纯事件回放可重建，AC-008-3）。",
+      "properties": {
+        "agent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "content": {
+          "title": "Content",
+          "type": "string"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "message_id": {
+          "title": "Message Id",
+          "type": "string"
+        },
+        "role": {
+          "const": "user",
+          "default": "user",
+          "title": "Role",
+          "type": "string"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run Id"
+        },
+        "seq": {
+          "description": "会话内单调递增序号；SSE id 即此值",
+          "minimum": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "message_created",
+          "default": "message_created",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "seq",
+        "session_id",
+        "created_at",
+        "message_id",
+        "content"
+      ],
+      "title": "MessageCreatedEvent",
+      "type": "object"
+    },
+    "MessageDeltaEvent": {
+      "additionalProperties": false,
+      "description": "token 增量（REQ-003）。kind=thinking 对应思考折叠块（推理模型 reasoning 流）。",
+      "properties": {
+        "agent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "delta": {
+          "title": "Delta",
+          "type": "string"
+        },
+        "kind": {
+          "default": "text",
+          "enum": [
+            "text",
+            "thinking"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "message_id": {
+          "title": "Message Id",
+          "type": "string"
+        },
+        "role": {
+          "const": "assistant",
+          "default": "assistant",
+          "title": "Role",
+          "type": "string"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run Id"
+        },
+        "seq": {
+          "description": "会话内单调递增序号；SSE id 即此值",
+          "minimum": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "message_delta",
+          "default": "message_delta",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "seq",
+        "session_id",
+        "created_at",
+        "message_id",
+        "delta"
+      ],
+      "title": "MessageDeltaEvent",
+      "type": "object"
+    },
+    "MessageFinishedEvent": {
+      "additionalProperties": false,
+      "description": "assistant 消息收口：finish_reason + 用量 + 可选结构化结果。",
+      "properties": {
+        "agent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "finish_reason": {
+          "enum": [
+            "stop",
+            "length",
+            "content_filter",
+            "error",
+            "cancelled"
+          ],
+          "title": "Finish Reason",
+          "type": "string"
+        },
+        "message_id": {
+          "title": "Message Id",
+          "type": "string"
+        },
+        "role": {
+          "const": "assistant",
+          "default": "assistant",
+          "title": "Role",
+          "type": "string"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run Id"
+        },
+        "seq": {
+          "description": "会话内单调递增序号；SSE id 即此值",
+          "minimum": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "structured": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StructuredResult"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "type": {
+          "const": "message_finished",
+          "default": "message_finished",
+          "title": "Type",
+          "type": "string"
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Usage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "seq",
+        "session_id",
+        "created_at",
+        "message_id",
+        "finish_reason"
+      ],
+      "title": "MessageFinishedEvent",
+      "type": "object"
+    },
+    "ReviewerFindings": {
+      "additionalProperties": false,
+      "description": "reviewer 子智能体的结构化返回（汇总端机器可拼，AC-011-1）。",
+      "properties": {
+        "coverage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Coverage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "findings": {
+          "items": {
+            "$ref": "#/$defs/Finding"
+          },
+          "title": "Findings",
+          "type": "array"
+        },
+        "schema_version": {
+          "const": "1",
+          "default": "1",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "summary": {
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "summary"
+      ],
+      "title": "ReviewerFindings",
+      "type": "object"
+    },
+    "RunErrorObj": {
+      "additionalProperties": false,
+      "description": "事件侧运行错误对象（run_status phase=error）。",
+      "properties": {
+        "code": {
+          "enum": [
+            "model_error",
+            "rate_limited",
+            "context_window_exceeded",
+            "cancelled_by_user",
+            "internal"
+          ],
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "retryable": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Retryable"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "title": "RunErrorObj",
+      "type": "object"
+    },
+    "RunStatusEvent": {
+      "additionalProperties": false,
+      "description": "运行/压缩状态（Q5 定稿新增族）：\n\n- subject=run：phase started/finished/stopped/error（停止与错误路径的 UI 状态机\n  信号，AC-001-2 / NFR-006；无法从消息族可靠推导）；\n- subject=compact：phase started/finished（上下文压缩提示，AC-010-1），\n  finished 时必须带 compact 前后窗口占用。",
+      "properties": {
+        "agent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "compact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CompactInfo"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/RunErrorObj"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "phase": {
+          "enum": [
+            "started",
+            "finished",
+            "stopped",
+            "error"
+          ],
+          "title": "Phase",
+          "type": "string"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run Id"
+        },
+        "seq": {
+          "description": "会话内单调递增序号；SSE id 即此值",
+          "minimum": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "subject": {
+          "enum": [
+            "run",
+            "compact"
+          ],
+          "title": "Subject",
+          "type": "string"
+        },
+        "type": {
+          "const": "run_status",
+          "default": "run_status",
+          "title": "Type",
+          "type": "string"
+        },
+        "usage_totals": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Usage"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "seq",
+        "session_id",
+        "created_at",
+        "subject",
+        "phase"
+      ],
+      "title": "RunStatusEvent",
+      "type": "object"
+    },
+    "SandboxOutputEvent": {
+      "additionalProperties": false,
+      "description": "沙箱输出（REQ-002）：\n- channel=stdout/stderr：命令输出增量（终端标签实时滚动）。exec_id 关联发起命令\n  的工具调用（execute 类工具的 exec_id = tool_call_id；命令与退出码经\n  tool_call_finished.exit_code 补全）；\n- channel=lifecycle：沙箱生命周期（phase: creating/running/paused/resumed/\n  killed/crashed/recreated）——「沙箱暂停/恢复」状态可见性的载体（PRD §9）。",
+      "properties": {
+        "agent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "channel": {
+          "enum": [
+            "stdout",
+            "stderr",
+            "lifecycle"
+          ],
+          "title": "Channel",
+          "type": "string"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "data": {
+          "default": "",
+          "title": "Data",
+          "type": "string"
+        },
+        "exec_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exec Id"
+        },
+        "phase": {
+          "anyOf": [
+            {
+              "enum": [
+                "creating",
+                "running",
+                "paused",
+                "resumed",
+                "killed",
+                "crashed",
+                "recreated"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Phase"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "enum": [
+                "bailian",
+                "opensandbox"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Provider"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run Id"
+        },
+        "sandbox_id": {
+          "title": "Sandbox Id",
+          "type": "string"
+        },
+        "seq": {
+          "description": "会话内单调递增序号；SSE id 即此值",
+          "minimum": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "sandbox_output",
+          "default": "sandbox_output",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "seq",
+        "session_id",
+        "created_at",
+        "sandbox_id",
+        "channel"
+      ],
+      "title": "SandboxOutputEvent",
+      "type": "object"
+    },
+    "StructuredResult": {
+      "additionalProperties": false,
+      "description": "结构化输出附带块（REQ-011）。status=fallback 时 data=null 且前端标注「未结构化」。",
+      "properties": {
+        "data": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ReviewerFindings"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "schema_name": {
+          "const": "reviewer_findings",
+          "default": "reviewer_findings",
+          "title": "Schema Name",
+          "type": "string"
+        },
+        "status": {
+          "default": "ok",
+          "enum": [
+            "ok",
+            "fallback"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "title": "StructuredResult",
+      "type": "object"
+    },
+    "TodoItem": {
+      "additionalProperties": false,
+      "description": "todo 条目（REQ-005）。todo 面板数据源 = 最近一次 write_todos 工具调用的快照。",
+      "properties": {
+        "content": {
+          "title": "Content",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "in_progress",
+            "completed"
+          ],
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "content",
+        "status"
+      ],
+      "title": "TodoItem",
+      "type": "object"
+    },
+    "ToolCallFinishedEvent": {
+      "additionalProperties": false,
+      "description": "工具调用结束（卡片补全：出参摘要 + 状态，AC-003-2）。\n\n- error 双通道原则（调研 §4.2）：给模型仍走 ToolMessage；本事件面向 UI/落库，\n  带 status/error{code,message,retryable}/truncated/duration_ms；\n- exit_code：execute 类命令退出码（非 0 不代表 status=error —— deepagents\n  口径：命令跑了就是 success，读 exit_code 判断命令失败）；\n- todos：tool=write_todos 时携带全量 todo 快照（REQ-005 面板数据源）；\n- result_ref：大结果被 offload 后的沙箱内落盘引用（AC-010-2 留痕）。",
+      "properties": {
+        "agent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "duration_ms": {
+          "minimum": 0,
+          "title": "Duration Ms",
+          "type": "integer"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolErrorObj"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "exit_code": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exit Code"
+        },
+        "result_preview": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Result Preview"
+        },
+        "result_ref": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Result Ref"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run Id"
+        },
+        "seq": {
+          "description": "会话内单调递增序号；SSE id 即此值",
+          "minimum": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "success",
+            "error"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "todos": {
+          "anyOf": [
+            {
+              "items": {
+                "$ref": "#/$defs/TodoItem"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Todos"
+        },
+        "tool_call_id": {
+          "title": "Tool Call Id",
+          "type": "string"
+        },
+        "truncated": {
+          "default": false,
+          "title": "Truncated",
+          "type": "boolean"
+        },
+        "type": {
+          "const": "tool_call_finished",
+          "default": "tool_call_finished",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "seq",
+        "session_id",
+        "created_at",
+        "tool_call_id",
+        "status",
+        "duration_ms"
+      ],
+      "title": "ToolCallFinishedEvent",
+      "type": "object"
+    },
+    "ToolCallStartedEvent": {
+      "additionalProperties": false,
+      "description": "工具调用开始（卡片出现：工具名 + 完整入参，AC-003-2）。",
+      "properties": {
+        "agent": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AgentRef"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "args": {
+          "additionalProperties": true,
+          "title": "Args",
+          "type": "object"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "risk_level": {
+          "anyOf": [
+            {
+              "enum": [
+                "low",
+                "medium",
+                "high"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Risk Level"
+        },
+        "run_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Run Id"
+        },
+        "seq": {
+          "description": "会话内单调递增序号；SSE id 即此值",
+          "minimum": 0,
+          "title": "Seq",
+          "type": "integer"
+        },
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "tool": {
+          "title": "Tool",
+          "type": "string"
+        },
+        "tool_call_id": {
+          "title": "Tool Call Id",
+          "type": "string"
+        },
+        "type": {
+          "const": "tool_call_started",
+          "default": "tool_call_started",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "seq",
+        "session_id",
+        "created_at",
+        "tool_call_id",
+        "tool",
+        "args"
+      ],
+      "title": "ToolCallStartedEvent",
+      "type": "object"
+    },
+    "ToolErrorObj": {
+      "additionalProperties": false,
+      "description": "事件侧工具错误对象（tool_call_finished / browser_action）。",
+      "properties": {
+        "code": {
+          "enum": [
+            "timeout",
+            "sandbox_unavailable",
+            "param_invalid",
+            "not_found",
+            "permission_denied",
+            "mcp_transport_error",
+            "mcp_tool_error",
+            "cancelled",
+            "internal"
+          ],
+          "title": "Code",
+          "type": "string"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "retryable": {
+          "anyOf": [
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Retryable"
+        }
+      },
+      "required": [
+        "code",
+        "message"
+      ],
+      "title": "ToolErrorObj",
+      "type": "object"
+    },
+    "Usage": {
+      "additionalProperties": false,
+      "description": "token 用量快照。口径（PRD 硬约束 9）：思考系模型的推理 token 计入 output。",
+      "properties": {
+        "input_tokens": {
+          "default": 0,
+          "title": "Input Tokens",
+          "type": "integer"
+        },
+        "output_tokens": {
+          "default": 0,
+          "title": "Output Tokens",
+          "type": "integer"
+        }
+      },
+      "title": "Usage",
+      "type": "object"
+    }
+  },
+  "anyOf": [
+    {
+      "$ref": "#/$defs/MessageCreatedEvent"
+    },
+    {
+      "$ref": "#/$defs/MessageDeltaEvent"
+    },
+    {
+      "$ref": "#/$defs/MessageFinishedEvent"
+    },
+    {
+      "$ref": "#/$defs/ToolCallStartedEvent"
+    },
+    {
+      "$ref": "#/$defs/ToolCallFinishedEvent"
+    },
+    {
+      "$ref": "#/$defs/ApprovalRequestEvent"
+    },
+    {
+      "$ref": "#/$defs/ApprovalResolvedEvent"
+    },
+    {
+      "$ref": "#/$defs/DiffReadyEvent"
+    },
+    {
+      "$ref": "#/$defs/DiffResolvedEvent"
+    },
+    {
+      "$ref": "#/$defs/SandboxOutputEvent"
+    },
+    {
+      "$ref": "#/$defs/RunStatusEvent"
+    },
+    {
+      "$ref": "#/$defs/BrowserActionEvent"
+    }
+  ],
+  "title": "RootModel[Union[MessageCreatedEvent, MessageDeltaEvent, MessageFinishedEvent, ToolCallStartedEvent, ToolCallFinishedEvent, ApprovalRequestEvent, ApprovalResolvedEvent, DiffReadyEvent, DiffResolvedEvent, SandboxOutputEvent, RunStatusEvent, BrowserActionEvent]]"
+}

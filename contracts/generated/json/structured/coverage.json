@@ -1,0 +1,33 @@
+{
+  "additionalProperties": false,
+  "description": "审查覆盖面（扇出场景下部分失败要如实呈现，AC-009-4）。",
+  "properties": {
+    "files_reviewed": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Files Reviewed",
+      "type": "integer"
+    },
+    "files_skipped": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Files Skipped",
+      "type": "array"
+    },
+    "notes": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Notes"
+    }
+  },
+  "title": "Coverage",
+  "type": "object"
+}

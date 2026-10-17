@@ -1,0 +1,2 @@
+import { z } from "zod";
+export const SandboxStatusSchema = z.object({ "cost_estimate": z.union([z.any(), z.null()]).default(null), "paused_since": z.union([z.string().datetime({ offset: true }), z.null()]).default(null), "phase": z.enum(["none","creating","running","paused","killed","crashed"]), "provider": z.enum(["bailian","opensandbox"]), "running_since": z.union([z.string().datetime({ offset: true }), z.null()]).default(null), "sandbox_id": z.union([z.string(), z.null()]).default(null) }).strict()

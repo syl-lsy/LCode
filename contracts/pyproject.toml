@@ -1,0 +1,18 @@
+[project]
+name = "lcode-contracts"
+version = "0.1.0"
+description = "LCode 契约单源（事件协议 / REST+SSE / 数据模型 / 结构化输出 / git 基线）+ 自校验 harness"
+requires-python = ">=3.12"
+dependencies = ["pydantic>=2.7,<3"]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+# 契约包不做 wheel 安装（纯源码 + pytest pythonpath 引入）；
+# 阶段 2 根 workspace 建立后，apps/server 以 path dependency 方式引入本包（见 ADR-003）。
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

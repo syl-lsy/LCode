@@ -1,0 +1,2 @@
+import { z } from "zod";
+export const ApprovalDecisionRequestSchema = z.object({ "decision": z.enum(["approve","edit","reject","respond"]), "edited_args": z.union([z.record(z.string(), z.any()), z.null()]).default(null), "feedback": z.union([z.string(), z.null()]).default(null), "scope": z.enum(["once","session"]).default("once") }).strict().describe("四决策（REQ-006）。edit=改写参数后放行（AC-006-3）；respond=人工反馈（AC-006-4）。\n\nscope=session 对应原型「完全访问/始终允许」的会话级持续免审（R9）；P0 落地为\n会话 approval_mode 升级，权限规则持久化属 P1 权限 API。")

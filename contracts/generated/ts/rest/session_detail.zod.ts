@@ -1,0 +1,2 @@
+import { z } from "zod";
+export const SessionDetailSchema = z.object({ "approval_mode": z.enum(["manual","auto"]), "created_at": z.string().datetime({ offset: true }), "id": z.string(), "last_active_at": z.string().datetime({ offset: true }), "model": z.string(), "reasoning_effort": z.enum(["off","low","medium","high"]), "run_state": z.enum(["idle","running","waiting_approval"]), "sandbox_provider": z.enum(["bailian","opensandbox"]), "status": z.enum(["active","archived"]), "title": z.string(), "updated_at": z.string().datetime({ offset: true }) }).strict()

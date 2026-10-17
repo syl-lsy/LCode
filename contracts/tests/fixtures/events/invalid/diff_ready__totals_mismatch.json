@@ -1,0 +1,25 @@
+{
+  "seq": 140,
+  "session_id": "0192f0a1-1111-4a1a-9c2d-000000000001",
+  "run_id": "0192f0a1-2222-4a1a-9c2d-000000000002",
+  "created_at": "2026-10-17T09:32:00.000000+00:00",
+  "type": "diff_ready",
+  "review_id": "0192f0a1-6666-4a1a-9c2d-000000000006",
+  "round": 2,
+  "baseline": {
+    "kind": "accepted",
+    "ref": "lcode-baseline/round-1",
+    "commit": "e83c5163316f89b8de6d78a1e58a28f6a3d1a1d0"
+  },
+  "files": [
+    {
+      "path": "README.md",
+      "change": "modified",
+      "additions": 5,
+      "deletions": 0
+    }
+  ],
+  "additions_total": 99,
+  "deletions_total": 0,
+  "patch_ref": "/api/v1/diff-reviews/0192f0a1-6666-4a1a-9c2d-000000000006"
+}

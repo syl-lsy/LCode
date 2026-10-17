@@ -1,0 +1,66 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "additions": {
+      "minimum": 0,
+      "title": "Additions",
+      "type": "integer"
+    },
+    "binary": {
+      "default": false,
+      "title": "Binary",
+      "type": "boolean"
+    },
+    "blob_ref": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Blob Ref"
+    },
+    "change": {
+      "enum": [
+        "added",
+        "modified",
+        "deleted",
+        "renamed"
+      ],
+      "title": "Change",
+      "type": "string"
+    },
+    "deletions": {
+      "minimum": 0,
+      "title": "Deletions",
+      "type": "integer"
+    },
+    "patch": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Patch"
+    },
+    "path": {
+      "title": "Path",
+      "type": "string"
+    }
+  },
+  "required": [
+    "path",
+    "change",
+    "additions",
+    "deletions"
+  ],
+  "title": "DiffFileDetail",
+  "type": "object"
+}

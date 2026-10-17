@@ -1,0 +1,10 @@
+{
+  "seq": 118,
+  "session_id": "0192f0a1-1111-4a1a-9c2d-000000000001",
+  "run_id": "0192f0a1-2222-4a1a-9c2d-000000000002",
+  "created_at": "2026-10-17T09:30:05.654321+00:00",
+  "type": "message_delta",
+  "message_id": "0192f0a1-4444-4a1a-9c2d-000000000004",
+  "role": "assistant",
+  "kind": "text"
+}

@@ -1,0 +1,13 @@
+{
+  "seq": 160,
+  "session_id": "0192f0a1-1111-4a1a-9c2d-000000000001",
+  "run_id": "0192f0a1-2222-4a1a-9c2d-000000000002",
+  "created_at": "2026-10-17T09:34:00.000000+00:00",
+  "type": "run_status",
+  "subject": "run",
+  "phase": "finished",
+  "usage_totals": {
+    "input_tokens": 52340,
+    "output_tokens": 8210
+  }
+}

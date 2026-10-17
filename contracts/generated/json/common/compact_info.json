@@ -1,0 +1,20 @@
+{
+  "additionalProperties": false,
+  "description": "上下文压缩前后窗口占用（REQ-010 / AC-010-1 界面提示）。",
+  "properties": {
+    "after_tokens": {
+      "title": "After Tokens",
+      "type": "integer"
+    },
+    "before_tokens": {
+      "title": "Before Tokens",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "before_tokens",
+    "after_tokens"
+  ],
+  "title": "CompactInfo",
+  "type": "object"
+}

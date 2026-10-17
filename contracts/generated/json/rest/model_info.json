@@ -1,0 +1,48 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "display_name": {
+      "title": "Display Name",
+      "type": "string"
+    },
+    "id": {
+      "title": "Id",
+      "type": "string"
+    },
+    "is_default": {
+      "default": false,
+      "title": "Is Default",
+      "type": "boolean"
+    },
+    "provider": {
+      "title": "Provider",
+      "type": "string"
+    },
+    "reasoning_efforts": {
+      "items": {
+        "enum": [
+          "off",
+          "low",
+          "medium",
+          "high"
+        ],
+        "type": "string"
+      },
+      "title": "Reasoning Efforts",
+      "type": "array"
+    },
+    "supports_reasoning": {
+      "title": "Supports Reasoning",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "id",
+    "display_name",
+    "provider",
+    "supports_reasoning",
+    "reasoning_efforts"
+  ],
+  "title": "ModelInfo",
+  "type": "object"
+}

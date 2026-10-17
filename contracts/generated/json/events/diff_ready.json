@@ -1,0 +1,236 @@
+{
+  "$defs": {
+    "AgentRef": {
+      "additionalProperties": false,
+      "description": "事件归属的子智能体标识；envelope.agent 为 null 表示主智能体。\n\n- agent_id：deepagents task() 派生的子线程标识\n- role：general-purpose / explorer / coder / reviewer 或 P1 自定义\n- spawned_by_tool_call_id：派生该子智能体的 task() 工具调用 id —— 前端用它把\n  主流中的 task() 工具卡片与子智能体进度面板（message_delta 兄弟流）关联",
+      "properties": {
+        "agent_id": {
+          "title": "Agent Id",
+          "type": "string"
+        },
+        "parent_agent_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Parent Agent Id"
+        },
+        "role": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Role"
+        },
+        "spawned_by_tool_call_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Spawned By Tool Call Id"
+        }
+      },
+      "required": [
+        "agent_id"
+      ],
+      "title": "AgentRef",
+      "type": "object"
+    },
+    "BaselineRef": {
+      "additionalProperties": false,
+      "description": "diff 对照基线引用（REQ-007 / AC-007-1/4）。\n\nkind 语义：head=输入仓库自身历史（不做 git 操作）；init=非 git 输入的\n[lcode-baseline] 初始提交（round-0）；accepted=上轮已接受后创建的基线提交。",
+      "properties": {
+        "commit": {
+          "pattern": "^[0-9a-f]{40}$",
+          "title": "Commit",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "head",
+            "init",
+            "accepted"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "ref": {
+          "title": "Ref",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "ref",
+        "commit"
+      ],
+      "title": "BaselineRef",
+      "type": "object"
+    },
+    "DiffFileSummary": {
+      "additionalProperties": false,
+      "properties": {
+        "additions": {
+          "minimum": 0,
+          "title": "Additions",
+          "type": "integer"
+        },
+        "binary": {
+          "default": false,
+          "title": "Binary",
+          "type": "boolean"
+        },
+        "change": {
+          "enum": [
+            "added",
+            "modified",
+            "deleted",
+            "renamed"
+          ],
+          "title": "Change",
+          "type": "string"
+        },
+        "deletions": {
+          "minimum": 0,
+          "title": "Deletions",
+          "type": "integer"
+        },
+        "old_path": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Old Path"
+        },
+        "path": {
+          "title": "Path",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "change",
+        "additions",
+        "deletions"
+      ],
+      "title": "DiffFileSummary",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "diff 就绪（REQ-007）：摘要走事件，逐文件完整 patch 走 REST（patch_ref）。\n\n新建文件须纳入 diff（git add -N 口径，AC-007-1）；totals 与 files 求和一致\n是诚实性强校验（F15：完成态呈现以 diff_ready 事实为准）。",
+  "properties": {
+    "additions_total": {
+      "minimum": 0,
+      "title": "Additions Total",
+      "type": "integer"
+    },
+    "agent": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AgentRef"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "baseline": {
+      "$ref": "#/$defs/BaselineRef"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "deletions_total": {
+      "minimum": 0,
+      "title": "Deletions Total",
+      "type": "integer"
+    },
+    "files": {
+      "items": {
+        "$ref": "#/$defs/DiffFileSummary"
+      },
+      "minItems": 1,
+      "title": "Files",
+      "type": "array"
+    },
+    "patch_ref": {
+      "title": "Patch Ref",
+      "type": "string"
+    },
+    "review_id": {
+      "title": "Review Id",
+      "type": "string"
+    },
+    "round": {
+      "minimum": 1,
+      "title": "Round",
+      "type": "integer"
+    },
+    "run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Run Id"
+    },
+    "seq": {
+      "description": "会话内单调递增序号；SSE id 即此值",
+      "minimum": 0,
+      "title": "Seq",
+      "type": "integer"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "type": {
+      "const": "diff_ready",
+      "default": "diff_ready",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "required": [
+    "seq",
+    "session_id",
+    "created_at",
+    "review_id",
+    "round",
+    "baseline",
+    "files",
+    "additions_total",
+    "deletions_total",
+    "patch_ref"
+  ],
+  "title": "DiffReadyEvent",
+  "type": "object"
+}
