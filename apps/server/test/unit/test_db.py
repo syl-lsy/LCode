@@ -1,0 +1,178 @@
+"""unit 层：`app/core/db.py`（ADR-004 偏差 2 的落点，替代基座的 test_engine.py）。
+
+只构造引擎/工厂对象，**不发起真实连接**（零网络）；目的之一是保证 `--cov=app`
+下 core/db.py 无遗漏分支（懒加载单例、URL 构造、dispose 归零）。
+"""
+
+from sqlalchemy.engine import URL
+from sqlalchemy.pool import QueuePool
+
+from app.core import db as db_module
+from app.core.config import db_settings
+from app.core.db import (
+    build_database_url,
+    dispose_engine,
+    get_engine,
+    get_session_factory,
+    session_scope,
+)
+
+
+async def _cleanup() -> None:
+    """每个用例收尾释放引擎（测试间不共享连接池状态）。"""
+    await dispose_engine()
+
+
+def _fill_db_settings(monkeypatch) -> None:
+    """补齐连接参数，避免空端口导致 URL 解析失败（create_async_engine 不建立连接）。"""
+    monkeypatch.setattr(db_settings, "host", "localhost")
+    monkeypatch.setattr(db_settings, "port", 5432)
+    monkeypatch.setattr(db_settings, "user", "user")
+    monkeypatch.setattr(db_settings, "password", "password")
+    monkeypatch.setattr(db_settings, "name", "test_db")
+
+
+async def test_get_engine_returns_singleton(monkeypatch):
+    _fill_db_settings(monkeypatch)
+
+    engine = get_engine()
+    assert engine is get_engine()  # 懒加载单例：重复调用返回同一对象
+    assert engine.url.database == "test_db"
+
+    await _cleanup()
+
+
+async def test_get_engine_uses_pool_settings_from_config(monkeypatch):
+    """连接池参数集中在 DB_ 配置组（基座铁律 2），引擎按配置构造。"""
+    _fill_db_settings(monkeypatch)
+    monkeypatch.setattr(db_settings, "pool_size", 3)
+    monkeypatch.setattr(db_settings, "max_overflow", 4)
+
+    engine = get_engine()
+
+    # 断言具体池型（QueuePool）后取 size：基类 Pool 没有 size()，类型收窄也顺带验证池配置
+    assert isinstance(engine.pool, QueuePool)
+    assert engine.pool.size() == 3
+    await _cleanup()
+
+
+def test_build_database_url_escapes_special_characters(monkeypatch):
+    """URL.create 口径：密码里的 @ / : / % 等字符必须转义（手工 f-string 会拼出错误 host）。"""
+    monkeypatch.setattr(db_settings, "user", "us er")
+    monkeypatch.setattr(db_settings, "password", "p@ss:w/rd")
+    monkeypatch.setattr(db_settings, "host", "db.internal")
+    monkeypatch.setattr(db_settings, "port", 6543)
+    monkeypatch.setattr(db_settings, "name", "lcode")
+
+    url = build_database_url()
+
+    assert isinstance(url, URL)
+    assert url.drivername == "postgresql+asyncpg"
+    assert url.host == "db.internal"
+    assert url.port == 6543
+    assert url.username == "us er"
+    assert url.password == "p@ss:w/rd"
+    assert "p%40ss" in url.render_as_string(hide_password=False)  # 渲染时被 percent-encode
+
+
+async def test_get_session_factory_is_singleton_bound_to_engine(monkeypatch):
+    _fill_db_settings(monkeypatch)
+
+    factory = get_session_factory()
+    assert factory is get_session_factory()  # 工厂单例（agent 运行时与请求级共用）
+    assert factory.kw["bind"] is get_engine()  # 绑定到引擎单例
+    assert factory.kw["expire_on_commit"] is False  # commit 后对象仍可读
+
+    await _cleanup()
+
+
+async def test_session_scope_commits_and_closes(monkeypatch):
+    """`session_scope`（agent 运行时短事务）：正常退出 commit，退出即关闭。"""
+    events: list[str] = []
+
+    class _FakeSession:
+        async def commit(self) -> None:
+            events.append("commit")
+
+        async def rollback(self) -> None:
+            events.append("rollback")
+
+        async def close(self) -> None:
+            events.append("close")
+
+    class _FakeFactory:
+        def __call__(self) -> _FakeSessionCtx:
+            return _FakeSessionCtx(_FakeSession())
+
+    class _FakeSessionCtx:
+        def __init__(self, session: _FakeSession) -> None:
+            self._session = session
+
+        async def __aenter__(self) -> _FakeSession:
+            events.append("enter")
+            return self._session
+
+        async def __aexit__(self, *exc: object) -> bool:
+            await self._session.close()
+            return False
+
+    monkeypatch.setattr(db_module, "get_session_factory", lambda: _FakeFactory())
+
+    async with session_scope() as session:
+        assert isinstance(session, _FakeSession)
+
+    assert events == ["enter", "commit", "close"]
+
+
+async def test_session_scope_rolls_back_on_error(monkeypatch):
+    """事务语义：body 抛错时 rollback（不留下半成品事务），异常继续上抛由调用方处理。"""
+    events: list[str] = []
+
+    class _FakeSession:
+        async def commit(self) -> None:
+            events.append("commit")
+
+        async def rollback(self) -> None:
+            events.append("rollback")
+
+        async def close(self) -> None:
+            events.append("close")
+
+    class _FakeSessionCtx:
+        async def __aenter__(self) -> _FakeSession:
+            return _FakeSession()
+
+        async def __aexit__(self, *exc: object) -> bool:
+            events.append("close")
+            return False
+
+    monkeypatch.setattr(db_module, "get_session_factory", lambda: _FakeSessionCtx)
+
+    try:
+        async with session_scope():
+            raise RuntimeError("boom")
+    except RuntimeError:
+        pass
+
+    assert events == ["rollback", "close"]
+
+
+async def test_dispose_engine_resets_singletons(monkeypatch):
+    """shutdown 路径：dispose 后单例归零，下次 get_engine 重建（不泄漏连接池）。"""
+    _fill_db_settings(monkeypatch)
+    first = get_engine()
+    assert get_session_factory() is not None
+
+    await dispose_engine()
+
+    assert db_module._engine is None
+    second = get_engine()
+    assert second is not first
+    await _cleanup()
+
+
+async def test_dispose_engine_is_noop_without_engine():
+    """未构造过引擎时 dispose 是空操作（应用启动失败/短命进程的清理路径）。"""
+    await dispose_engine()
+    await dispose_engine()  # 第二次仍不报错
+    assert db_module._engine is None

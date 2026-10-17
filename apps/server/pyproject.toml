@@ -1,0 +1,53 @@
+[project]
+name = "lcode-server"
+version = "0.1.0"
+description = "LCode 后端服务：FastAPI + SQLAlchemy 2.0 异步 + PostgreSQL（wire 契约见 contracts/）"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi[standard]==0.136.3",
+    "sqlalchemy[asyncio]==2.0.50",
+    "asyncpg==0.31.0",
+    "pydantic-settings==2.16.0",
+    "alembic==1.20.0",
+    # 契约单源（ADR-003）：workspace 成员 + editable 安装，锁文件里带上契约包的依赖
+    # （pydantic）；`import lcode_contracts` 由 venv 解析（不再依赖 PYTHONPATH 路径口径）。
+    "lcode-contracts",
+    # 沙箱 SDK 版本**钉死**（AGENTS.md 硬约束 1）：更高的 e2b 版本创建百炼沙箱实例
+    # 会返回 405；升级必须先过 sandbox 适配层回归（M2 任务 4 才真正使用这两个依赖）。
+    "e2b==2.31.0",
+    "e2b-code-interpreter==2.8.1",
+]
+
+[tool.uv.sources]
+# 契约包是 workspace 成员（根 pyproject 的 members）；workspace 源 = uv 官方口径的
+# 「成员间依赖」声明方式（path 源与成员身份互斥，uv 会显式报错）。
+lcode-contracts = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# 把 app/ 打包进服务，使 `uv run --package lcode-server python -c "import app.main"` 可用
+[tool.hatch.build.targets.wheel]
+packages = ["app/"]
+
+# 开发/测试依赖（不随生产安装）：三层测试（unit/integration/e2e）与调试
+# httpx = 自写测试用（ASGITransport / e2e 轮询）；httpx2 = starlette TestClient 的首选后端
+# （缺 httpx2 时回退 httpx 并给出弃用告警，故两者都锁进 dev 组）
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "pytest-cov==7.1.0",
+    "httpx==0.28.1",
+    "httpx2==2.13.1",
+    "python-dotenv==1.2.4",
+    "debugpy==1.8.22",
+    "psycopg2-binary==2.9.13",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+# 契约包已以 **editable** 方式进入 workspace 共享 venv（contracts 是可安装的 workspace
+# 成员，见 contracts/pyproject.toml 的 [build-system]）：`import lcode_contracts` 由 venv
+# 直接解析，测试不再需要 `pythonpath` 兜底——三层测试/dev/e2e 的 import 语义由此统一。

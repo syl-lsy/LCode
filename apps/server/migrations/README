@@ -1,0 +1,13 @@
+# Alembic 迁移目录（服务自管，A3 §7.1）
+#
+#   versions/          迁移脚本版本目录（骨架期为空：M2 任务 1 才生成业务十表迁移）
+#   env.py             迁移环境：URL 从 DB_ 配置组构造（见文件内 docstring）
+#   script.py.mako     新迁移脚本模板（alembic async 模板生成，勿手改结构）
+#
+# 常用命令（从**仓库根**跑；根 Makefile 的 db-migrate / db-upgrade / db-downgrade 封装同款）：
+#   uv run --package lcode-server alembic -c apps/server/alembic.ini revision --autogenerate -m "add ten tables"
+#   uv run --package lcode-server alembic -c apps/server/alembic.ini upgrade head
+#   uv run --package lcode-server alembic -c apps/server/alembic.ini downgrade -1
+#
+# 注意：LangGraph checkpointer 三表（checkpoints / checkpoint_writes / checkpoint_blobs）
+# 由 SDK 的 `AsyncPostgresSaver.setup()` 自建，**不进本目录的迁移**（A3 §7.2）。

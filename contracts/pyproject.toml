@@ -8,11 +8,17 @@ dependencies = ["pydantic>=2.7,<3"]
 [dependency-groups]
 dev = ["pytest>=8"]
 
-# 契约包不做 wheel 安装（纯源码 + pytest pythonpath 引入）；
-# 阶段 2 根 workspace 建立后，apps/server 以 path dependency 方式引入本包（见 ADR-003）。
-[tool.uv]
-package = false
+# 契约包以 editable 方式进入根 workspace 的共享 venv（apps/server 以
+# `[tool.uv.sources] lcode-contracts = { workspace = true }` 声明依赖边）：
+# 三层测试/dev/e2e 的 `import lcode_contracts` 语义统一由 venv 提供，不依赖
+# PYTHONPATH 之类的路径口径。包体仍是本目录的**纯源码**（src 布局，无生成物、无契约语义改动）。
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
+# harness 仍可独立运行（不依赖根 workspace 存在）：
+#   make -C contracts check   # = uv run pytest tests -q + bash tools/ts-check.sh
+# 下方 pytest pythonpath 保证「契约目录内直接跑 pytest」也能解析到 src 布局。
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]

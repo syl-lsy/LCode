@@ -1,0 +1,103 @@
+# LCode — uv workspace 虚拟根（不声明 [project]）
+#
+# 不声明 [project] 时 uv 的默认成员 = 全部 workspace 成员：`uv sync` / 裸 `uv run pytest`
+# 在仓库根开箱可用（单 venv 装齐所有成员与其 dev 组）。
+# 若根声明 [project]，uv 的默认成员只剩根项目本身，成员依赖不会被安装——
+# 届时所有命令都必须显式 `uv run --package lcode-server ...`。
+#
+# 成员口径（contracts/README「阶段 2 接入挂点」）：contracts 与 apps/server 都是
+# workspace 成员；contracts 以 **editable** 方式装进共享 venv（可安装的纯源码包），
+# apps/server 以 `[tool.uv.sources] lcode-contracts = { workspace = true }` 声明依赖边
+# ——三层测试/dev/e2e 的 `import lcode_contracts` 语义统一由 venv 提供。
+# web/ 为 npm 工程，不进 uv workspace。
+[tool.uv.workspace]
+members = [
+    "contracts",
+    "apps/server",
+]
+
+# ---------------------------------------------------------------- 仓库级开发工具（ruff / mypy）
+#
+# 挂在 workspace 根（虚拟根同样支持 PEP 735 dependency-groups）：单 venv 内共享，
+# `uv sync` 后 `uv run ruff` / `uv run mypy` 即可用（版本 `==` 锁定，基座铁律 5）。
+[dependency-groups]
+dev = [
+    "ruff==0.17.1",
+    "mypy==2.4.0",
+]
+
+# 按 git 变更跑关联测试（scripts/run_changed_tests.py，根 Makefile 的 test-changed 目标）：
+# 变更文件落在这些测试目录内且是测试文件（test_*.py / *_test.py）才会被逐个串行执行
+[tool.test-runner]
+test_dirs = [
+    "apps/*/test",
+    "contracts/tests",
+]
+
+# ---------------------------------------------------------------- 静态检查（ruff / mypy）
+#
+# 质量门禁工具链（AGENTS.md 工程纪律）：ruff + mypy + pytest。
+# 命令（从仓库根跑）：
+#   uv run ruff check .            # 静态检查
+#   uv run ruff format --check .   # 格式一致性（如需格式化：去掉 --check）
+#   uv run mypy                    # 类型检查（files/mypy_path 见下）
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+# 不进根门禁的目录：
+# - docs/ 含 vendored 参考快照（deepagents 快照自带 ruff 配置与自家风格）与设计稿，属第三方/文档资产；
+# - contracts/ 是 M1 冻结的契约单源，有独立 harness（`make -C contracts check`），
+#   不并入服务门禁（并入前需先与契约包维护规则对齐）；
+# - 其余为本地工具状态目录（.zcode 等）与产物目录。
+extend-exclude = [
+    ".venv",
+    "node_modules",
+    "docs",
+    "design",
+    "contracts",
+    "out",
+    ".zcode",
+    ".scratch",
+    ".mimosa",
+    ".playwright-mcp",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort（import 排序）
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "SIM", # flake8-simplify
+]
+# `lcode_contracts` 是 workspace 内的契约单源（非第三方包）→ 与本服务包同组排序
+[tool.ruff.lint.isort]
+known-first-party = ["app", "lcode_contracts"]
+
+[tool.ruff.lint.per-file-ignores]
+# 测试文件允许长断言行（可读性优先于行长）
+"apps/*/test/**/*.py" = ["E501"]
+
+[tool.mypy]
+python_version = "3.14"
+files = ["apps/server/app", "apps/server/test"]
+# 包搜索路径：`app`（服务包）与 `lcode_contracts`（契约源码树）。
+# 为什么契约仍列在这里（editable 安装已能解析它）：mypy 对「已安装但无 py.typed 标记」
+# 的包只做 import-untyped 跳过（既不分析也不给类型），而我们要的是**按源码分析**契约
+# 模型（`Event` 判别联合、`RestErrorCode` 字面量等都得是真实类型，配套 overrides 关掉
+# 其自身报错）。运行期/测试的 import 语义已统一由 venv 提供，本项只影响 mypy 的取型方式。
+mypy_path = ["apps/server", "contracts/src"]
+check_untyped_defs = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+no_implicit_optional = true
+strict_equality = true
+
+# 契约包是冻结的单源（M1 已评审通过），不纳入本仓库的质量门禁对象；
+# 仅作为类型信息被 mypy 读取（errors 由 contracts/ 自己的 harness 与 CI 守门）
+[[tool.mypy.overrides]]
+module = ["lcode_contracts.*"]
+ignore_errors = true
