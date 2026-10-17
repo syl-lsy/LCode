@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Node
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+
+# Env & secrets（密钥只进环境变量，.env 永不入库）
+.env
+.env.*
+!.env.example
+!.env.test.example
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Logs & local data
+*.log
+/logs/
+/data/
+
+# Project tooling state (local only)
+.zcode/
+.mimosa/
+.playwright-mcp/
+.scratch/
