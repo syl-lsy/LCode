@@ -85,7 +85,7 @@ LCode 是**个人开发项目**：ZCode 风格的交互式 Coding Agent，定位
 
 根 `Makefile` 是质量门禁命令的**单一事实源**（CI 只调这些目标，不复制命令）；全部从仓库根执行，`make help` 看全量。
 
-- **开发**：`make dev`（后端 fastapi dev :8080，自举 .env）/ `make dev-web`（Vite，/api 代理 127.0.0.1:8000）/ `make debug`（debugpy :5678）
+- **开发**：`make dev`（后端 fastapi dev :8000，自举 .env）/ `make dev-web`（Vite，/api 代理 127.0.0.1:8000）/ `make debug`（debugpy :5678）
 - **测试三层环**：`make test`（后端 unit+integration，`--cov-fail-under=80`）/ `make test-e2e`（子进程真服务，自举 .env.test）/ `make test-web`（vitest 全量；骨架期不挂前端覆盖率阈值）/ 细分 `make test-unit`、`test-integration`
 - **静态检查**：`make lint`（后端 ruff check + format --check + mypy；前端 eslint）/ `make typecheck`（前端 tsc；后端 mypy 已在 lint 内）
 - **契约**：`make contracts`（= `make -C contracts check`；`make -C contracts gen` 重新生成产物；TS 侧需 node≥20）

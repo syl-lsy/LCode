@@ -22,9 +22,9 @@ help: ## 列出全部目标（自文档）
 
 # ---------------------------------------------------------------- 开发
 
-dev: ## 后端 dev 服务器（fastapi dev 127.0.0.1:8080；缺 .env 自动从模板自举）
+dev: ## 后端 dev 服务器（fastapi dev 127.0.0.1:8000，与 vite /api 代理及 WEB_PORT 对齐；缺 .env 自动从模板自举）
 	@$(ENV_BOOTSTRAP)
-	uv run --package $(SERVICE) fastapi dev apps/server/app/main.py --port 8080
+	uv run --package $(SERVICE) fastapi dev apps/server/app/main.py --port 8000
 
 debug: ## debugpy 断点调试：先跑本目标，IDE/VSCode 连 127.0.0.1:5678
 	@$(ENV_BOOTSTRAP)

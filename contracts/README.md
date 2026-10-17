@@ -63,8 +63,8 @@ generated/json/**.json（JSON Schema，入库）
 generated/ts/**.types.ts + **.zod.ts + index.ts（入库；web/ 阶段 2 引入）
 ```
 
-- 后端消费：apps/server 以 path dependency 引入本包（`tool.uv.sources` 或
-  workspace member，ADR-003），事件翻译层出口 = `TypeAdapter(Event)` 校验；
+- 后端消费：apps/server 以 workspace 源（editable）引入本包
+  （`[tool.uv.sources] workspace = true`，ADR-003），事件翻译层出口 = `TypeAdapter(Event)` 校验；
 - 前端消费：web/ 引入 `generated/ts`（zod 运行时校验 SSE/REST 载荷）；
 - **改契约的正确姿势**：改 pydantic 模型 → `make -C contracts gen` → 提交单源 +
   生成物 + （如涉及）fixtures；`make -C contracts check` 红着就不许合。
@@ -146,8 +146,8 @@ model_validator**（JSON Schema 无法表达；逐条清单 = `tools/ts/validate
 | 挂点 | 动作 |
 |---|---|
 | 根 Makefile `ci` 目标 | 追加 `make -C contracts check` |
-| 根 workspace | `members = ["contracts", "apps/server"]`（contracts 保留独立 pyproject；web 为 npm 不管） |
-| apps/server | path dependency 引入 lcode-contracts；conformance 测试：SQLAlchemy metadata 对照 `TABLES` 规格逐表断言；SSE 出口事件先过 `TypeAdapter(Event)` |
+| 根 workspace | `members = ["contracts", "apps/server"]`（contracts 保留独立 pyproject；web 由 pnpm 管理、不入 uv workspace） |
+| apps/server | workspace 源引入 lcode-contracts（editable）；conformance 测试：SQLAlchemy metadata 对照 `TABLES` 规格逐表断言；SSE 出口事件先过 `TypeAdapter(Event)` |
 | web | 引入 `generated/ts`；SSE/REST 载荷进 zod 校验后再进 store |
 
 ## 六、REST 错误码 → HTTP 映射（errors.py 机器可校验版）

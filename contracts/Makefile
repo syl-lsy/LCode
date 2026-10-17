@@ -1,5 +1,7 @@
-# contracts/ 自校验入口（M1 阶段 1：根 Makefile 尚未建立，本文件是唯一命令入口）
-# 阶段 2 根 Makefile 就位后，根 `make ci` 挂 `make -C contracts check`（见 contracts/README.md）
+# contracts/ 自校验入口（独立 harness，也可在本目录内单独使用）
+# 根 Makefile 已于 M1 阶段 2（2026-10-17）就位：根 `contracts` / `ci` / `ci-backend` 目标
+# 挂 `make -C contracts check`，CI（.github/workflows/ci.yml）经 `make ci-backend` 调用。
+# 口径见根 Makefile 与 contracts/README.md「五、阶段 2 接入挂点」。
 .PHONY: check test gen ts-check clean
 
 ## 一条命令自校验：pytest（含 fixtures 正负例 + 生成物同步检查）+ TS 生成与 tsc 编译
