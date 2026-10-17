@@ -1,0 +1,19 @@
+{
+  "seq": 131,
+  "session_id": "0192f0a1-1111-4a1a-9c2d-000000000001",
+  "run_id": "0192f0a1-2222-4a1a-9c2d-000000000002",
+  "created_at": "2026-10-17T09:31:20.000000+00:00",
+  "type": "message_finished",
+  "message_id": "0192f0a1-4444-4a1a-9c2d-000000000004",
+  "role": "assistant",
+  "finish_reason": "stop",
+  "usage": {
+    "input_tokens": 5200,
+    "output_tokens": 1100
+  },
+  "structured": {
+    "schema_name": "reviewer_findings",
+    "status": "ok",
+    "data": null
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "seq": 161,
+  "session_id": "0192f0a1-1111-4a1a-9c2d-000000000001",
+  "run_id": "0192f0a1-2222-4a1a-9c2d-000000000002",
+  "created_at": "2026-10-17T09:34:10.000000+00:00",
+  "type": "run_status",
+  "subject": "run",
+  "phase": "error",
+  "error": {
+    "code": "oom_not_in_registry",
+    "message": "run 级错误码必须在 RunErrorCode 注册表内（与 ToolErrorCode/RestErrorCode 互不混用）"
+  }
+}

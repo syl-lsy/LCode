@@ -10,6 +10,7 @@ from lcode_contracts.baseline import (
     parse_tag,
     tag_for_round,
 )
+from lcode_contracts.events import BaselineRef
 
 
 def test_tag_roundtrip() -> None:
@@ -67,3 +68,25 @@ def test_commit_sha_format() -> None:
     assert check_commit_sha("e83c5163316f89b8de6d78a1e58a28f6a3d1a1d0")
     assert not check_commit_sha("xyz")
     assert not check_commit_sha("E83C5163316F89B8DE6D78A1E58A28F6A3D1A1D0")  # 大写不算
+
+
+def test_canonical_form_roundtrip_property() -> None:
+    """规范形态往返恒等：tag_for_round(n) → parse_tag → .tag == 原值（非规范输入容错不在断言内）。"""
+    for n in (0, 1, 7, 42):
+        tag = tag_for_round(n)
+        parsed = parse_tag(tag)
+        assert parsed.round == n and parsed.tag == tag
+
+
+def test_commit_message_roundtrip_without_note() -> None:
+    m = BaselineCommitMessage(kind="accepted", round=7)
+    assert m.render() == "[lcode-baseline] round-7"
+    assert BaselineCommitMessage.parse(m.render()) == m
+
+
+def test_baseline_ref_shares_sha_rule() -> None:
+    """events.BaselineRef.commit 与 check_commit_sha 同口径（40 位小写 hex）。"""
+    with pytest.raises(ValidationError):
+        BaselineRef(kind="head", ref="HEAD", commit="E83C5163316F89B8DE6D78A1E58A28F6A3D1A1D0")
+    ok = "e83c5163316f89b8de6d78a1e58a28f6a3d1a1d0"
+    assert BaselineRef(kind="head", ref="HEAD", commit=ok).commit == ok

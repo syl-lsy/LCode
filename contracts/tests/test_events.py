@@ -6,12 +6,14 @@
 """
 
 import json
+import typing
 from pathlib import Path
 
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from conftest import FIXTURES
+from conftest import FIXTURES, load_fixture
+from lcode_contracts import events as events_mod
 from lcode_contracts.events import EVENT_TYPES, P0_EVENT_TYPES, Event
 
 ADAPTER = TypeAdapter(Event)
@@ -57,6 +59,32 @@ def test_p0_event_registry() -> None:
         "run_status",
     }
     assert "browser_action" in EVENT_TYPES and "browser_action" not in P0_EVENT_TYPES
+
+
+def test_registry_union_alignment_no_duplicate_types() -> None:
+    """注册表完整性：类集合 ↔ type 字面量 ↔ 判别器联合三方对齐，且无重复字面量。
+
+    重复 type 会让 EVENT_TYPES 静默遮蔽一个类；联合与类集合脱节会让
+    "注册了但校验不到 / 校验到但没注册" 的漂移潜伏到出口才发现。
+    """
+    classes = events_mod._EVENT_CLASSES
+    literals = [c.model_fields["type"].default for c in classes]
+    assert len(set(literals)) == len(literals), f"重复 type 字面量：{literals}"
+    assert set(EVENT_TYPES) == set(literals)
+    union_classes = set(typing.get_args(typing.get_args(events_mod.Event)[0]))
+    assert union_classes == set(classes), "判别器联合与注册类集合不一致（新增事件类必须进 _EVENT_CLASSES）"
+
+
+def test_seq_boundary_and_duration_bound() -> None:
+    """数值下界约束（ge=0）：seq=0 是合法下边界；负 seq / 负 duration_ms 必须被拒。"""
+    delta = load_fixture("events/valid/message_delta.json")
+    delta["seq"] = 0
+    assert ADAPTER.validate_python(delta).seq == 0
+
+    finished = load_fixture("events/valid/tool_call_finished.json")
+    finished["duration_ms"] = -1
+    with pytest.raises(ValidationError):
+        ADAPTER.validate_python(finished)
 
 
 def test_negative_coverage_evidence() -> None:
