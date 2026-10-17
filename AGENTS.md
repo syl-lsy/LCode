@@ -13,7 +13,7 @@ LCode 是**个人开发项目**：ZCode 风格的交互式 Coding Agent，定位
 
 **产品形态**：Web 应用。客户端路线图：Web（主）→ Electron 套壳 Desktop → CLI 轻客户端（可选）→ TUI（三期，届时再定"云端看板 vs 本地执行版"）。
 
-**当前状态**：决策基线冻结；**PRD 已定稿**（`docs/PRD.md`，增量 diff 演进，已确认 2026-10-17）。仓库已初始化（基线 tag `m1-start`）；**M1 进行中**：阶段 1 已完成并经用户评审冻结（`contracts/` 五域 + 自校验 harness、`docs/adr/ADR-001~005`、`docs/arch/` 前后端架构详设）；当前阶段 2：双端脚手架与质量门禁工具链（含 GitHub Actions CI）搭建。所有架构决策已冻结为基线，改动需用户确认。
+**当前状态**：决策基线冻结；**PRD 已定稿**（`docs/PRD.md`，增量 diff 演进）。仓库已初始化（基线 tag `m1-start`）；**M1 完成**（tag `m1-done`）：`contracts/` 契约冻结 v1（五域 + 109 用例自校验 harness + TS/zod 生成管线，经用户评审通过）；`docs/adr/ADR-001~005` 与 `docs/arch/` 前后端架构详设就位；双端脚手架与根质量门禁工具链全绿（`apps/server` 99 用例 / `web/` 22 用例；GitHub Actions CI 已配置，待首次 push 后验证）。**下一步 M2**：聊天 + 沙箱闭环（REQ-001/002/003/004/014/015）。所有架构决策已冻结为基线，改动需用户确认。
 
 ## 技术栈（冻结基线）
 
@@ -83,4 +83,13 @@ LCode 是**个人开发项目**：ZCode 风格的交互式 Coding Agent，定位
 
 ## 构建命令
 
-（M1 阶段 1 已就位：`make -C contracts check` 契约自校验 / `make -C contracts gen` 重新生成契约产物；根 Makefile（dev / lint / typecheck / test / ci）待阶段 2 双端脚手架建立后补充）
+根 `Makefile` 是质量门禁命令的**单一事实源**（CI 只调这些目标，不复制命令）；全部从仓库根执行，`make help` 看全量。
+
+- **开发**：`make dev`（后端 fastapi dev :8080，自举 .env）/ `make dev-web`（Vite，/api 代理 127.0.0.1:8000）/ `make debug`（debugpy :5678）
+- **测试三层环**：`make test`（后端 unit+integration，`--cov-fail-under=80`）/ `make test-e2e`（子进程真服务，自举 .env.test）/ `make test-web`（vitest 全量；骨架期不挂前端覆盖率阈值）/ 细分 `make test-unit`、`test-integration`
+- **静态检查**：`make lint`（后端 ruff check + format --check + mypy；前端 eslint）/ `make typecheck`（前端 tsc；后端 mypy 已在 lint 内）
+- **契约**：`make contracts`（= `make -C contracts check`；`make -C contracts gen` 重新生成产物；TS 侧需 node≥20）
+- **CI 聚合**：`make ci` = `ci-backend`（contracts+lint-py+test+test-e2e）+ `ci-frontend`（frozen install+lint-web+typecheck+test-web+build-web）；串行语义，勿加 `-j`
+- **开发内环**：`make test-changed`（工作区变更）/ `make test-changed SINCE=m1-start`（自某 ref 起；**SINCE 是 make 变量**，`--since` 不是合法 make 选项；脚本选项形态为 `uv run python scripts/run_changed_tests.py --since <ref>`）——非门禁
+- **DB**：`make db-migrate message="..."` / `db-upgrade` / `db-downgrade version=-1`（M2 真用，需 Postgres 可达；docker-compose 起库目标留 M2 TODO）
+- **清理**：`make clean`（缓存与构建产物，不动 .venv/node_modules/.env*）

@@ -117,9 +117,11 @@ harness 覆盖（`tests/`）：
 - git in-sync 守门语义：生成后 `git diff --exit-code -- generated/ts` 必须为空、且
   无未入库新文件——本地"已生成未提交"窗口内红是**预期**（生成物与提交必须同步），
   暂存/提交生成物后绿；无 git 环境显式提示跳过（不许静默）；
-- 未尽事项（阶段 2 处理）：① 根 `make ci` 挂 `make -C contracts check`；
-  ② web/ 以包/别名引入 `contracts/generated/ts`；③ zod 主版本升级评估
-  （当前锁 ^3.23 —— 与 json-schema-to-zod 生成代码的 API 面对齐）。
+- 已完成（2026-10-17，阶段 2）：① 根 `make ci` 已挂 `make -C contracts check`
+  （`ci-backend`）；② web/ 已以别名方式引入 `contracts/generated/ts`
+  （`@contracts`，tsconfig/vite 双侧，含 fixture 回放冒烟）；
+- 未尽事项：③ zod 主版本升级评估（当前锁 ^3.23 —— 与 json-schema-to-zod
+  生成代码的 API 面对齐）。
 
 ### 两侧校验强度差异（实测口径，随评审修正更新）
 
@@ -138,6 +140,8 @@ model_validator**（JSON Schema 无法表达；逐条清单 = `tools/ts/validate
   （`TypeAdapter(Event)`）是唯一闸门。
 
 ## 五、阶段 2 接入挂点
+
+> （2026-10-17 已落地：见根 `Makefile` 的 `contracts`/`ci-backend` 目标、根 `pyproject.toml` workspace 成员、`apps/server/pyproject.toml` 的 workspace 依赖边，以及 `web/vite.config.ts` + `web/tsconfig.json` 的 `@contracts` 别名。）
 
 | 挂点 | 动作 |
 |---|---|

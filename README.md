@@ -9,17 +9,33 @@ ZCode 风格的交互式 Coding Agent，个人自用生产力工具——聊天�
 - **Agent**：LangGraph（外层编排图）+ deepagents（内层执行单元）
 - **执行环境**：百炼 Sandbox（默认，E2B 协议兼容）+ OpenSandbox（自托管备选）双适配器，配置开关一键切换
 
-## 当前阶段
+## 当前状态
 
-M1：仓库初始化 + `contracts/` 契约冻结 + 质量门禁工具链就位。
+**M1 完成**（tag `m1-done`）：`contracts/` 契约冻结 v1（五域 + 109 用例自校验 harness + TS/zod 生成管线，经用户评审通过）；双端脚手架就位（`apps/server` 99 用例 / `web/` 22 用例）；根质量门禁全绿——`make ci`（后端契约 + lint + 测试与覆盖率门禁 + e2e，前端 frozen install + lint + tsc + vitest + build）。GitHub Actions CI 已配置，待首次 push 后验证。
 
-## 文档入口
+**下一步 M2**：聊天 + 沙箱闭环（REQ-001/002/003/004/014/015）。
 
-- [`docs/PRD.md`](docs/PRD.md) — 需求唯一事实源
+## 目录导览
+
+- `apps/server/` — 后端服务（FastAPI，`app/` 分层：api / schema / model / services / exception）
+- `web/` — 前端应用（React + Vite，通过 `@contracts` 别名消费契约生成物）
+- `contracts/` — 契约单源（pydantic v2 模型 + 生成管线，五域）
+- `docs/` — [`PRD.md`](docs/PRD.md) 需求事实源 / `adr/` 架构决策 / `arch/` 前后端详设与测试计划 / `daily/` 每日进度 / `reference/` 参考快照
+- `design/prototype/` — 界面设计稿与 design tokens
+- `Makefile` — 质量门禁命令单一事实源（CI 只调 make 目标）
 - [`AGENTS.md`](AGENTS.md) — 工程指令与决策基线
-- [`design/prototype/`](design/prototype/) — 界面设计稿（R3）
-- [`docs/reference/`](docs/reference/) — 参考快照（deepagents 源码等）
 
 ## 构建命令
 
-（M1 阶段 2 工具链就位后补充）
+根 `Makefile` 为单一事实源（CI 只调 make 目标），全部从仓库根执行，`make help` 看全量：
+
+- 开发：`make dev` / `make dev-web` / `make debug`
+- 测试：`make test`（unit + integration + 覆盖率门禁）/ `make test-unit` / `make test-integration` / `make test-e2e` / `make test-web`
+- 检查：`make lint` / `make typecheck` / `make contracts`
+- 前端构建：`make install-web`（frozen install）/ `make build-web`
+- 里程碑全量：`make ci`（= `ci-backend` + `ci-frontend`）
+- 开发内环：`make test-changed [SINCE=<ref>]`（非门禁）
+- 数据库：`make db-migrate message="..."` / `make db-upgrade` / `make db-downgrade version=-1`（M2 真用）
+- 清理：`make clean`
+
+详见 `AGENTS.md`「构建命令」与 `docs/research/github-actions-ci.md`。
