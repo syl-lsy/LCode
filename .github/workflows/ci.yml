@@ -1,0 +1,84 @@
+# LCode CI —— 里程碑环（调研报告 docs/research/github-actions-ci.md §4.1 方案 A「每次全跑」）
+#
+# 原则：
+# - 步骤只调根 Makefile 目标（单一事实源），不在 yml 里复制命令；
+# - 两 job 并行：backend（contracts + ruff/mypy + test 覆盖门禁 + e2e）/
+#   frontend（frozen install + eslint + tsc + vitest + vite build）；
+# - 只跑 ubuntu-latest：Free 私有仓库 2000 分钟/月，Linux 即基准费率；勿加 macOS
+#   （P2 Electron 引入前必须重查费率口径，报告 §6.2）；
+# - .env.test 自举在 Makefile 目标内完成（test -f || cp 模板），干净 checkout 无需额外步骤；
+# - M1 的 CI 不需要任何 secrets（报告 §2.2）；integration/e2e 骨架期不触真实依赖，
+#   requires_* 缺依赖显式跳过；
+# - 分支保护（required status checks）GitHub Free 私有仓库不生效——本 workflow 先做
+#   advisory 红叉自查，升 Pro 与否留 P2 一起决策（报告 §4.2）。
+
+name: CI
+
+on:
+  push:
+    branches: [main] # 直接推 main / PR 合并后触发
+  pull_request: # PR 每次更新触发（feature 分支 push 不重复触发）
+  workflow_dispatch: # 手动兜底
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true # 同分支新提交取消旧 run，省配额
+
+jobs:
+  backend: # Python 3.14 + uv workspace（apps/server/ + contracts/）
+    name: backend
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 安装 uv（Python 3.14 + 依赖缓存）
+        uses: astral-sh/setup-uv@v10
+        with:
+          # 与根 .python-version / apps/server requires-python>=3.14 对齐（报告骨架的 "3.12" 是占位，此处定稿）
+          python-version: "3.14"
+          enable-cache: true # 默认 auto（有 uv.lock 即开），显式声明更清晰
+          cache-dependency-glob: uv.lock # 根单锁文件，哈希变才换缓存 key
+
+      - name: 安装 Node（contracts TS harness 需要）
+        # 理由：make contracts = pytest harness + ts-check.sh（TS 生成/tsc/in-sync 守门），
+        # ts-check.sh 要求 node>=20 且 node 不可用时**显式失败**——backend job 必须带 node。
+        # 定稿=本地开发同代 v24（volta；Node Active LTS）。报告骨架的 "22" 为占位。
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+
+      - name: 质量门禁（make ci-backend = contracts + ruff/mypy + test 覆盖门禁 + e2e）
+        run: make ci-backend
+
+      # M2+ 可选（骨架期不启用，省 Free 的 500MB artifacts 额度）：失败时上传覆盖率报告
+      # - uses: actions/upload-artifact@v6
+      #   if: failure()
+      #   with: { name: backend-coverage, path: htmlcov/, retention-days: 7 }
+
+  frontend: # React + TS + Vite + pnpm（web/）
+    name: frontend
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+
+      # 顺序铁律：pnpm/action-setup 必须在 setup-node 之前（缓存解析 pnpm store 路径，报告 §5.3）
+      - name: 安装 pnpm（版本取 packageManager 字段：pnpm@10.33.4）
+        uses: pnpm/action-setup@v6
+        with:
+          # 仓库根无 package.json（uv workspace 虚拟根 + npm 工程在 web/），显式指到 web/
+          package_json_file: web/package.json
+
+      - name: 安装 Node（pnpm store 缓存，key 由 web/pnpm-lock.yaml 派生）
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24 # 与本地开发（volta v24）同代；web engines 要求 >=22
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      # 骨架期前端**不挂覆盖率硬门禁**：ci-frontend 内 make test-web 跑 `vitest run` 全量
+      # （22 用例）即可；vite.config.ts 的 coverage.thresholds 属 M2 目标，届时把 test-web
+      # 切到 `vitest run --coverage`（package.json 的 test:coverage 已就位）。
+      - name: 质量门禁（make ci-frontend = frozen install + eslint + tsc + vitest + vite build）
+        run: make ci-frontend
