@@ -9,6 +9,9 @@ dependencies = [
     "asyncpg==0.31.0",
     "pydantic-settings==2.16.0",
     "alembic==1.20.0",
+    # 统一日志体系（基座铁律 11 / NFR-007）：版本钉死对齐全局技能 python-backend-base
+    # 第四轮基线（2026-10-17 课程 18 章「日志」），core/logger/ 是日志唯一配置处。
+    "loguru==0.7.3",
     # 契约单源（ADR-003）：workspace 成员 + editable 安装，锁文件里带上契约包的依赖
     # （pydantic）；`import lcode_contracts` 由 venv 解析（不再依赖 PYTHONPATH 路径口径）。
     "lcode-contracts",

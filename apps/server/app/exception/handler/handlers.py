@@ -13,6 +13,12 @@
 响应统一为 `{"code": <契约 RestErrorCode>, "message": <面向用户的信息>}`（NFR-002 /
 契约 `errors.ErrorBody`）——**本处理器只负责错误侧响应**；成功侧 `/api/` 信封见
 `app/core/middleware/response.py`（两侧是同一份响应契约，基座铁律 9）。
+
+日志（基座铁律 11 / NFR-007）：**异常日志是「每请求恰一条」的异常侧出口**——优先经
+`request.state.request_log`（logging 中间件挂上的 loguru 请求日志，带
+request_id/method/path），补上状态码后按级落（协议/校验/业务异常 warning，未知异常
+error 带栈）；request_log 缺失（不在中间件链内直调处理器，如单测/脚本）时回退标准库
+logger，severity/message 口径保持一致。
 """
 
 import logging
@@ -46,9 +52,54 @@ def _format_validation_error(err: dict) -> str:
     return f"{loc}: {err['msg']}"
 
 
+def _log_exception(request: Request, exc: Exception, http_status: int, body_msg: str) -> None:
+    """异常日志唯一出口：优先走 request_log（loguru 单管线），缺失时回退标准库 logger。
+
+    分级口径（与 service_logger、logging 中间件一致）：
+    - BusinessException：业务异常=预期控制流走 warning；detail 追加进 message（只进日志），
+      仅包装了原始异常（original_exception，基础设施故障）时才带栈；
+    - 其他 500：未处理异常走 error 带栈（供根因排查）；
+    - 其余（协议错误/校验失败）：请求异常走 warning 不带栈。
+    """
+    log = getattr(request.state, "request_log", None)
+    if log is not None:
+        # 有 request_log：走 loguru——与「请求完成/业务日志」同一条管线、同一 request_id
+        log.status_code = http_status
+        if isinstance(exc, BusinessException):
+            log.message = f"业务异常: {exc.message}"
+            if exc.detail:
+                log.message += f" | detail={exc.detail}"
+            log.warning(exc=exc.original_exception)
+        elif http_status == 500:
+            log.message = f"未处理异常: {exc}"
+            log.error(exc=exc)
+        else:
+            log.message = f"请求异常: {body_msg}"
+            log.warning()
+        return
+
+    # 兜底：request_log 不存在（直调处理器等不在中间件链内的场景）→ 标准库 logger，
+    # 消息口径与上面一致（detail 仅在非空时追加），保证异常永不静默
+    if isinstance(exc, BusinessException):
+        if exc.detail:
+            logger.warning(
+                "业务异常: %s | detail=%s",
+                exc.message,
+                exc.detail,
+                exc_info=exc.original_exception,
+            )
+        else:
+            logger.warning("业务异常: %s", exc.message, exc_info=exc.original_exception)
+    elif http_status == 500:
+        logger.error("未处理异常: %s", exc, exc_info=exc)
+    else:
+        logger.warning("请求异常: %s", body_msg)
+
+
 async def exception_handler(request: Request, exc: Exception) -> JSONResponse:
     # 标记错误响应已终态（{code, message}）：统一信封中间件据此跳过，
-    # 保证错误响应不被成功信封二次包装（两个中间件共享同一 scope 的 state）。
+    # 保证错误响应不被成功信封二次包装（两个中间件共享同一 scope 的 state）；
+    # logging 中间件同样据此跳过 SUCCESS（异常侧已按级落，每请求恰一条）。
     request.state.exception_handled = True
 
     if isinstance(exc, HTTPException):
@@ -64,15 +115,9 @@ async def exception_handler(request: Request, exc: Exception) -> JSONResponse:
             body_msg = "\n".join(_format_validation_error(e) for e in exc.errors())
         elif isinstance(exc, BusinessException):
             body_msg = exc.message
-            # 业务异常 = 预期控制流走 warning；仅包装了原始异常（基础设施故障）时才带栈
-            logger.warning(
-                "业务异常: %s | detail=%s",
-                exc.message,
-                exc.detail,
-                exc_info=exc.original_exception,
-            )
         else:
             body_msg = default_msg
-            logger.error("未处理异常: %s", exc, exc_info=exc)
+
+    _log_exception(request, exc, http_status, body_msg)
 
     return JSONResponse(status_code=http_status, content={"code": code, "message": body_msg})

@@ -185,6 +185,23 @@ def test_wrapped_body_is_valid_json_of_original():
 # ---- 注册表对类式中间件的行为 ----
 
 
+def test_middleware_registry_order_includes_logging():
+    """注册表三项且顺序固定：process_time → logging → response（越靠后越靠外，基座铁律 11）。
+
+    response（统一信封）必须最靠外：最后拿到响应才能读到 process_time 写的响应头；
+    logging（请求日志）在它里面、process_time 外面：call_next 返回后立即记，
+    且不越过信封层改动响应体。
+    """
+    from app.core.middleware import MIDDLEWARES, process_time, response
+    from app.core.middleware import logging as logging_middleware
+
+    assert MIDDLEWARES == [
+        process_time.MIDDLEWARE,
+        logging_middleware.MIDDLEWARE,
+        response.MIDDLEWARE,
+    ]
+
+
 def test_register_middleware_supports_class_middleware(monkeypatch):
     """类式中间件（如 CORSMiddleware，M2 给 web 客户端开跨域时用）走 add_middleware。"""
     from fastapi import FastAPI

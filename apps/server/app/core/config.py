@@ -9,7 +9,7 @@
   settings 快照与日志里**永不出现密钥本体**，运行时由工厂 `os.environ[...]` 取值；
 - 新增配置变量必须同步仓库根 `.env.example` 与 `.env.test.example`；
 - 分组前缀清单（与 `.env.example` 逐项对齐）：通用（无前缀）/ `WEB_` / `DB_` / `LLM_` /
-  `SANDBOX_` / `SSE_` / `AGENT_`。
+  `SANDBOX_` / `SSE_` / `AGENT_` / `LOG_`。
 """
 
 from pydantic_settings import BaseSettings
@@ -29,13 +29,10 @@ class BaseSettingsWithEnv(BaseSettings):
 
 
 class CommonSettings(BaseSettingsWithEnv):
-    """通用配置：环境标识与日志级别。"""
+    """通用配置：环境标识（日志级别已迁往 `LogSettings.level`，env 键名 `LOG_LEVEL` 不变）。"""
 
     environment: str = "development"
     """部署环境；`production` 时隐藏 /docs、/redoc、/openapi.json（基座口径）。"""
-
-    log_level: str = "INFO"
-    """应用日志级别（NFR-007）；main.py 启动时应用到 app logger 与 root logger。"""
 
 
 # ---------------------------------------------------------------- WEB_
@@ -137,6 +134,22 @@ class AgentSettings(BaseSettingsWithEnv):
     model_config = {"env_prefix": "AGENT_"}
 
 
+# ---------------------------------------------------------------- LOG_
+
+
+class LogSettings(BaseSettingsWithEnv):
+    """日志配置（`LOG_` 前缀，统一日志体系见 `app/core/logger/`；基座铁律 11 / NFR-007）。
+
+    `log_level` 自 `CommonSettings` 迁入（env 键名 `LOG_LEVEL` 不变）：日志级别只归
+    loguru 管线消费，与通用组解耦。
+    """
+
+    level: str = "INFO"  # LOG_LEVEL：输出级别（TRACE/DEBUG/INFO/SUCCESS/WARNING/ERROR/CRITICAL）
+    slow_query_threshold: float = 200  # LOG_SLOW_QUERY_THRESHOLD：SQL 超过该毫秒数记 DBLog.warning
+    file_dir: str = "logs"  # LOG_FILE_DIR：dev 环境 ERROR 日志目录（相对运行时 cwd 即仓库根）
+    model_config = {"env_prefix": "LOG_"}
+
+
 # ---------------------------------------------------------------- 单例（全项目唯一读取入口）
 
 common_settings = CommonSettings()
@@ -146,3 +159,4 @@ llm_settings = LLMSettings()
 sandbox_settings = SandboxSettings()
 sse_settings = SSESettings()
 agent_settings = AgentSettings()
+log_settings = LogSettings()

@@ -25,6 +25,7 @@ from app.core.config import (
     CommonSettings,
     DBSettings,
     LLMSettings,
+    LogSettings,
     SandboxSettings,
     SSESettings,
     WebSettings,
@@ -43,6 +44,7 @@ GROUPS: dict[str, type[BaseSettings]] = {
     "SANDBOX_": SandboxSettings,
     "SSE_": SSESettings,
     "AGENT_": AgentSettings,
+    "LOG_": LogSettings,
 }
 
 # 反向断言的豁免登记位（存 env 键名）：确有意不进模板的字段写在这里并注明理由

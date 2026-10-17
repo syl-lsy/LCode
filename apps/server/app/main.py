@@ -1,7 +1,9 @@
-"""FastAPI 入口（A3 §1.1）：中间件注册表 + 四处异常注册 + 双健康探针 + lifespan。
+"""FastAPI 入口（A3 §1.1）：日志单管线 + 中间件注册表 + 四处异常注册 + 双健康探针 + lifespan。
 
 启动顺序（不可调换）：
-1. `register_middleware(app)`——`core/middleware` 注册表（含 `/api/` 成功信封）；
+0. `_silence_uvicorn_loggers()` + `setup_logging()`——日志系统最先就位（基座铁律 11），
+   其余组件打印日志前完成配置；
+1. `register_middleware(app)`——`core/middleware` 注册表（含请求日志与 `/api/` 成功信封）；
 2. `setup_openapi(app)`——OpenAPI 信封同步（与响应中间件同契约，两侧一起动）；
 3. 四处异常注册——校验失败 / 协议错误 / 领域异常 / 未知异常兜底；
 4. 路由挂载——`api/v1` 聚合点（M2 逐个 include，M1 为空结构）。
@@ -21,26 +23,52 @@ from starlette.exceptions import HTTPException
 from app.api.v1 import api_router
 from app.core.config import common_settings, web_settings
 from app.core.db import dispose_engine, get_engine
+from app.core.logger import setup_logging
 from app.core.middleware import register_middleware
 from app.core.openapi import setup_openapi
 from app.exception import BusinessException
 from app.exception.handler import exception_handler, generate_error_docs
 
+
+def _silence_uvicorn_loggers() -> None:
+    """关闭 uvicorn 的 access/error 标准库 logger（幂等，可在多处重复调用）。
+
+    日志单管线（基座铁律 11 / NFR-007）：请求日志由 logging 中间件统一记（每请求
+    恰一条，`core/logger/` 配置）；ServerErrorMiddleware 对未知异常构造响应后
+    re-raise 的兜底记录，也已由全局异常处理器经 request.state.request_log 按 ERROR
+    带栈承担。保留 uvicorn 自己的输出只会与 loguru 管线重复（访问日志每请求多打
+    一条）、且绕过 request_id 串联。
+    """
+    logging.getLogger("uvicorn.error").disabled = True
+    logging.getLogger("uvicorn.access").disabled = True
+
+
+# 日志系统在系统启动时完成配置（须在其余组件打印日志前）：
+# development = 彩色控制台 + ERROR 额外落文件（LOG_FILE_DIR）；production = stdout 单行 JSON。
+_silence_uvicorn_loggers()
+setup_logging()
+
 # 生产环境隐藏文档入口（/docs、/redoc、/openapi.json 全部关闭）
 _hide_docs = common_settings.environment == "production"
-
-# LOG_LEVEL（NFR-007）落到 root logger：uvicorn 自带 access 日志，应用日志走根层级
-logging.basicConfig(level=common_settings.log_level.upper())
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """应用生命周期：启动期装载 / 关闭期释放。
 
+    启动期先**再关一次** uvicorn 标准库 logger（幂等）：uvicorn 每次启动都会按自己
+    的 log 配置重建标准库 logger（dictConfig 会把 disabled 重置为 False），而
+    `fastapi dev` 在配置日志**之前**就先导入了本模块——模块顶部那次关闭会被随后的
+    配置覆盖；启动钩子在服务真正起跑前再关一次，此后含访问日志在内的 uvicorn 输出
+    都走 loguru 单管线（只剩 uvicorn 起跑前 CLI 打出的 Started server process /
+    Waiting for application startup 两行属预期残留；`uvicorn app.main:app` 直启时连
+    这两行也没有）。
+
     M2 挂点（A3 §4.3）：启动时装配 `SandboxManager`（会话沙箱注册表 + 空闲 pause
     计时任务），关闭时对 running 沙箱显式 `pause()` 保留状态（硬约束 8：模板自动
     休眠不保状态），再停计时任务。当前只做「关闭时释放数据库连接池」。
     """
+    _silence_uvicorn_loggers()
     yield
     await dispose_engine()
 
@@ -56,8 +84,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# 中间件统一在 app/core/middleware/__init__.py 的注册表声明（当前含 X-Process-Time
-# 与 /api/ 统一成功信封），须在异常处理器注册之前、FastAPI 实例化之后挂载。
+# 中间件统一在 app/core/middleware/__init__.py 的注册表声明（当前含 X-Process-Time、
+# 请求日志与 /api/ 统一成功信封），须在异常处理器注册之前、FastAPI 实例化之后挂载。
 register_middleware(app)
 
 # OpenAPI 同步：/api/ 路径的 200/201 响应 schema 包装为统一信封，与响应中间件保持一致。

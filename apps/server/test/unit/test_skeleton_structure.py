@@ -18,6 +18,7 @@ SKELETON_MODULES = [
     "app.core",
     "app.core.config",
     "app.core.db",
+    "app.core.logger",
     "app.core.middleware",
     "app.core.openapi",
     "app.dependencies",

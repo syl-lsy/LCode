@@ -1,15 +1,21 @@
 """unit 层：`app/core/db.py`（ADR-004 偏差 2 的落点，替代基座的 test_engine.py）。
 
 只构造引擎/工厂对象，**不发起真实连接**（零网络）；目的之一是保证 `--cov=app`
-下 core/db.py 无遗漏分支（懒加载单例、URL 构造、dispose 归零）。
+下 core/db.py 无遗漏分支（懒加载单例、URL 构造、dispose 归零、SQL 慢查询事件钩子）。
 """
 
+import time
+
+from sqlalchemy import event
 from sqlalchemy.engine import URL
 from sqlalchemy.pool import QueuePool
 
 from app.core import db as db_module
-from app.core.config import db_settings
+from app.core.config import db_settings, log_settings
 from app.core.db import (
+    _after_cursor_execute,
+    _before_cursor_execute,
+    _query_start_times,
     build_database_url,
     dispose_engine,
     get_engine,
@@ -38,6 +44,10 @@ async def test_get_engine_returns_singleton(monkeypatch):
     engine = get_engine()
     assert engine is get_engine()  # 懒加载单例：重复调用返回同一对象
     assert engine.url.database == "test_db"
+    # 慢查询钩子已真挂在 sync_engine 上（事件名拼错/挂错对象会静默失效，
+    # 按「事件名 + 钩子函数」显式守卫；异步引擎统一经 sync_engine 触发事件）
+    assert event.contains(engine.sync_engine, "before_cursor_execute", _before_cursor_execute)
+    assert event.contains(engine.sync_engine, "after_cursor_execute", _after_cursor_execute)
 
     await _cleanup()
 
@@ -176,3 +186,43 @@ async def test_dispose_engine_is_noop_without_engine():
     await dispose_engine()
     await dispose_engine()  # 第二次仍不报错
     assert db_module._engine is None
+
+
+# ---- SQL 事件钩子：慢查询阈值分档（直调模块级函数，不连库）----
+
+
+def test_db_hooks_log_debug_for_normal_query(log_records):
+    """未达阈值（默认 LOG_SLOW_QUERY_THRESHOLD=200ms）的 SQL 走 DEBUG（INFO 级别下不落盘）。"""
+    context = object()  # 执行上下文：钩子按 id(context) 配对起点
+    _before_cursor_execute(None, None, "SELECT 1", (), context, False)
+    _after_cursor_execute(None, None, "SELECT 1", (), context, False)
+
+    record = log_records[-1]
+    assert record["level"].name == "DEBUG"
+    assert record["message"] == "SQL执行"
+    assert record["extra"]["sql"] == "SELECT 1"
+    assert record["extra"]["duration_ms"] >= 0
+    assert id(context) not in _query_start_times  # 起点已配对删除，映射表不泄漏
+
+
+def test_db_hooks_log_warning_for_slow_query(log_records):
+    """达阈值走 WARNING（慢查询）：DBLog 字段含 sql/params/duration_ms（基座铁律 11）。"""
+    context = object()
+    _query_start_times[id(context)] = time.perf_counter() - 1  # 起点改早 1 秒：必超 200ms
+
+    _after_cursor_execute(None, None, "SELECT pg_sleep(1)", "()", context, False)
+
+    record = log_records[-1]
+    assert record["level"].name == "WARNING"
+    assert record["message"] == "慢查询"
+    assert record["extra"]["sql"] == "SELECT pg_sleep(1)"
+    assert record["extra"]["params"] == "()"
+    assert record["extra"]["duration_ms"] >= log_settings.slow_query_threshold
+    assert id(context) not in _query_start_times
+
+
+def test_db_hooks_ignore_unpaired_execution(log_records):
+    """没有配对的执行前事件（如外部直接触发）：静默跳过，不误报耗时。"""
+    _after_cursor_execute(None, None, "SELECT 1", (), object(), False)
+
+    assert log_records == []

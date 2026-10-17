@@ -33,6 +33,7 @@ Thumbs.db
 # Logs & local data
 *.log
 /logs/
+/tmp/
 /data/
 
 # Project tooling state (local only)
@@ -45,3 +46,18 @@ Thumbs.db
 docs/
 design/
 out/
+
+# ---- Git 提交规范（2026-10-17 定）：文档/隐秘/非工程文件不入库 ----
+# 文档：所有 Markdown 与 README（含根目录 AGENTS.md；docs/design/out 见上）
+# 例外：测试代码必须入库（CI 门禁依赖 make test/contracts/test-web，勿对 tests 加 ignore）
+
+# 隐秘信息：密钥/凭证文件格式（.env 系见上节；密钥只进环境变量）
+*.pem
+*.key
+*.p12
+*.pfx
+secrets.*
+*credentials*.json
+
+# 测试产物（测试代码入库，仅产物忽略；Python/Node 缓存见首节）
+coverage/

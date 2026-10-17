@@ -27,6 +27,11 @@ ROOT = Path(__file__).resolve().parents[4]
 # 装载 .env.test：值进入 os.environ 后被服务子进程继承（Popen 默认继承父进程环境）
 load_dotenv(ROOT / ".env.test")
 
+# 日志文件隔离：.env.test 存在时以它的 LOG_FILE_DIR=tmp/logs 为准；被 cp 模板遗漏或
+# 本地 .env.test 是旧版（无 LOG_ 组）时兜底 tmp/logs——测试期故意触发的异常不把错误
+# 日志写进仓库根（tmp/ 已 gitignore）。子进程经继承拿到同值。
+os.environ.setdefault("LOG_FILE_DIR", "tmp/logs")
+
 _process: subprocess.Popen | None = None
 
 

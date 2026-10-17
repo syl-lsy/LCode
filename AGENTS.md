@@ -44,6 +44,7 @@ LCode 是**个人开发项目**：ZCode 风格的交互式 Coding Agent，定位
 | 事件协议 | 所有客户端/面板只消费自定义领域事件（`message_delta / tool_call_* / approval_request / diff_ready / sandbox_output / browser_action`），不透传 LangGraph 原始事件；字段级定义以 `contracts/src/lcode_contracts/events.py` 为准（Q5 定稿，含 run_status 运行状态族） |
 | Agent 扩展点 | 唯一机制 = middleware 栈（`create_deep_agent(middleware=[...])`；name 合并/替换语义见快照 `graph.py` 的 `_apply_custom_middleware`）；LCode 业务 middleware 清单与顺序在 M1 ADR「扩展性与 hooks」冻结；P1 hooks = HookBridgeMiddleware 读 `~/.lcode/hooks.json`（REQ-108），插件系统不排期（REQ-109 P2 占位，工具扩展走 MCP） |
 | 记忆与持久化 | 双轨（REQ-004 约束）：短期 = LangGraph checkpointer（`AsyncPostgresSaver`，thread_id=会话 ID）**仅运行时断点恢复**，审批 interrupt 依赖它；长期 = REQ-101 三件套（自有表 + pgvector），SDK `StoreBackend` 桥 PostgresStore（namespace 按用户隔离）；**业务事实源 = 自有表**，禁止从 checkpoint 反序列化做展示/审计；`InMemorySaver`/`InMemoryStore` 仅 pytest 用 |
+| 日志 | `app/core/logger/` 是日志唯一出口（ADR-006 / 基座铁律 11）：每请求恰好一条——成功走 logging 中间件（`request_id` 经 contextvars 贯穿全链路），异常经全局处理器从 `request.state.request_log` 按级落；业务日志用 `@service_logger`，慢查询由 `core/db.py` 事件钩子记 DBLog.warning；uvicorn 标准库日志双关（main.py 模块顶 + lifespan，勿删其一）；新增日志一律走 LogRecord 子类体系 |
 
 ## 硬性约束与已知的坑
 
@@ -66,6 +67,7 @@ LCode 是**个人开发项目**：ZCode 风格的交互式 Coding Agent，定位
 - **质量门禁**：测试/lint/类型检查干净是"完成"的必要条件（工具链：ruff + mypy + pytest / eslint + tsc + vitest，仓库初始化时建立）；功能"完成"的行为判据以 `docs/PRD.md` 对应 REQ 的验收标准（AC-xxx-x）为准
 - **TDD 开发模式**：前后端一律测试先行——先写失败测试（红）→ 最小实现（绿）→ 重构；bug 修复先写复现测试再修；新功能的完成判据 = 新增测试通过 + 既有测试全绿（与质量门禁工具链 pytest/vitest 配合）
 - **每日任务记录**：当天工作与任务总结落盘 `docs/daily/`（一文件一天，`YYYY-MM-DD.md`，规则见该目录 README）。每日 23:00 定时任务（自动化"LCode项目每天的完成任务和工作的总结"）自动汇总生成；会话收尾时如当天文件不存在或有重要遗漏，手动补充。性质是进度日志，需求事实源仍是 `docs/PRD.md`
+- **Git 提交规范**（2026-10-17 定）：**只提交工程代码**——文档（`*.md`/README，含本 AGENTS.md）、隐秘信息（.env 系、密钥格式文件）、非工程产物（缓存/覆盖率/日志）一律不入库，规则见 `.gitignore`"Git 提交规范"节；**例外：测试代码必须入库**（CI 门禁 `make test`/`contracts`/`test-web` 依赖全部测试文件，勿对 tests 加 ignore），仅测试产物忽略。被 ignore 的文档属"本地专用资产"：磁盘保留、不上传 GitHub，防丢失靠本地备份而非远端
 - **最小方案**：MVP 七件套 = 聊天 + 沙箱执行 + 流式 + 会话持久化 + planning/todo + 工具审批 + diff 可视化。**二期清单（勿提前实现）**：RAG 三件套（长期记忆/代码索引/OpenWiki）、自定义工作流 DSL、浏览器能力、fetch_url 自研、fallback 链、多用户
 - UI 不暴露采样参数（temperature/top_p/top_k），只暴露**模型选择器 + reasoning-effort 档位**
 

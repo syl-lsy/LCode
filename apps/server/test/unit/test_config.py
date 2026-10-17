@@ -14,6 +14,7 @@ from app.core.config import (
     CommonSettings,
     DBSettings,
     LLMSettings,
+    LogSettings,
     SandboxSettings,
     SSESettings,
     WebSettings,
@@ -30,11 +31,41 @@ def _fresh[T: BaseSettings](settings_cls: type[T]) -> T:
 
 
 def test_common_settings_default(monkeypatch):
-    """通用组（无前缀）：默认值直接生效。"""
+    """通用组（无前缀）：默认值直接生效（log_level 已迁往 LogSettings，见下方 LOG_ 组）。"""
     monkeypatch.delenv("ENVIRONMENT", raising=False)
     settings = _fresh(CommonSettings)
     assert settings.environment == "development"
-    assert settings.log_level == "INFO"
+    assert "log_level" not in CommonSettings.model_fields  # 防回流：日志级别只归 LOG_ 组
+
+
+def test_log_settings_defaults(monkeypatch):
+    """LOG_ 组默认口径：级别 INFO、慢查询阈值 200ms、dev 错误日志目录 logs（基座铁律 11）。"""
+    for var in ("LOG_LEVEL", "LOG_SLOW_QUERY_THRESHOLD", "LOG_FILE_DIR"):
+        monkeypatch.delenv(var, raising=False)
+    settings = _fresh(LogSettings)
+    assert settings.level == "INFO"
+    assert settings.slow_query_threshold == 200
+    assert settings.file_dir == "logs"
+
+
+def test_log_settings_reads_prefixed_env(monkeypatch):
+    """LOG_ 前缀：LOG_LEVEL / LOG_SLOW_QUERY_THRESHOLD / LOG_FILE_DIR 映射到字段（阈值转 float）。"""
+    monkeypatch.setenv("LOG_LEVEL", "DEBUG")
+    monkeypatch.setenv("LOG_SLOW_QUERY_THRESHOLD", "50")
+    monkeypatch.setenv("LOG_FILE_DIR", "tmp/logs")
+    settings = _fresh(LogSettings)
+    assert settings.level == "DEBUG"
+    assert settings.slow_query_threshold == 50
+    assert settings.file_dir == "tmp/logs"
+
+
+def test_log_prefix_is_isolated_from_other_groups(monkeypatch):
+    """前缀隔离：LOG_ 组的变量不会落入 DB_ 组（同名后缀互不串扰），反之亦然。"""
+    monkeypatch.setenv("LOG_NAME", "should-not-leak")
+    monkeypatch.delenv("DB_NAME", raising=False)
+    assert _fresh(DBSettings).name == "lcode"  # 默认值，未被 LOG_NAME 污染
+    monkeypatch.setenv("DB_LEVEL", "ERROR")
+    assert _fresh(LogSettings).level == "INFO"  # 默认值，未被 DB_LEVEL 污染
 
 
 def test_web_settings_reads_prefixed_env(monkeypatch):
