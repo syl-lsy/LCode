@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LCode</title>
+    <script>
+      // 防 FOUC（A4 §9.4）：React 挂载前按 localStorage('lcode.theme') 设置主题类；默认暗色。
+      try {
+        var theme = localStorage.getItem('lcode.theme');
+        document.documentElement.classList.toggle('dark', theme !== 'light');
+      } catch (e) {
+        document.documentElement.classList.add('dark');
+      }
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

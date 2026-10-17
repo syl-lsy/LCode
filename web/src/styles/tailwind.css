@@ -1,0 +1,134 @@
+@import "tailwindcss";
+@import "./tokens.css";
+
+/* ==========================================================================
+   Tailwind v4 桥接层（A4 §9.3）
+   - tokens.css 是设计 token 唯一事实源（复制自 R3/R5 原型），本文件只做
+     「语义变量 → Tailwind 主题命名空间」的映射，不定义任何新色值。
+   - `@theme inline`：工具类直接内联引用 var(--…)，运行时解析到 tokens 的
+     :root/.dark 当前值 → html.dark 类切换主题即时生效。
+   - tokens.css 以无层（unlayered）@import 进入，级联上压过 Tailwind 的
+     @layer theme 输出，主题切换语义与原型一致。
+   - 映射范围：语义色全量（含 diff-、terminal-、git-、msg-user、quota、
+     trajectory、toast、workflow 各族）+ 字体族 + 圆角 + 阴影。
+   - 不映射（按 A4 直接以 CSS 变量消费）：--text-ui-*（正文字号阶梯）、
+     --sp-*（间距标尺）、--dur 与 --ease 动效族、--ui-font-size/--code-font-size、
+     --focus-ring/--glow-running。中性/品牌色阶（neutral-、sky- 等族）不注册为
+     工具类——组件一律用语义 token，需要原色阶时用 text-[var(--color-sky-400)]
+     形式的任意值。
+   ========================================================================== */
+
+@theme inline {
+  /* 字体族 */
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+
+  /* 圆角 / 阴影 */
+  --radius-xs: var(--radius-xs);
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --radius-xl: var(--radius-xl);
+  --shadow-sm: var(--shadow-sm);
+  --shadow-md: var(--shadow-md);
+  --shadow-lg: var(--shadow-lg);
+
+  /* 语义色 · 表面与结构 */
+  --color-background: var(--color-background);
+  --color-background-alt: var(--color-background-alt);
+  --color-card: var(--color-card);
+  --color-card-selected: var(--color-card-selected);
+  --color-popover: var(--color-popover);
+  --color-input: var(--color-input);
+  --color-sidebar: var(--color-sidebar);
+  --color-panel: var(--color-panel);
+  --color-header: var(--color-header);
+  --color-surface: var(--color-surface);
+  --color-surface-hover: var(--color-surface-hover);
+  --color-hover: var(--color-hover);
+  --color-selected: var(--color-selected);
+
+  /* 语义色 · 品牌与强调 */
+  --color-brand: var(--color-brand);
+  --color-link: var(--color-link);
+  --color-accent: var(--color-accent);
+  --color-accent-foreground: var(--color-accent-foreground);
+  --color-accent-border: var(--color-accent-border);
+
+  /* 语义色 · 前景与按钮 */
+  --color-foreground: var(--color-foreground);
+  --color-foreground-strong: var(--color-foreground-strong);
+  --color-foreground-subtle: var(--color-foreground-subtle);
+  --color-foreground-subtlest: var(--color-foreground-subtlest);
+  --color-foreground-inverse: var(--color-foreground-inverse);
+  --color-primary: var(--color-primary);
+  --color-primary-foreground: var(--color-primary-foreground);
+  --color-secondary: var(--color-secondary);
+
+  /* 语义色 · 边框与状态 */
+  --color-border: var(--color-border);
+  --color-border-hover: var(--color-border-hover);
+  --color-destructive: var(--color-destructive);
+  --color-success: var(--color-success);
+  --color-warning: var(--color-warning);
+
+  /* 语义色 · diff（审查面板，F15/Git 色族配套） */
+  --color-diff-added: var(--color-diff-added);
+  --color-diff-removed: var(--color-diff-removed);
+  --color-diff-added-bg: var(--color-diff-added-bg);
+  --color-diff-removed-bg: var(--color-diff-removed-bg);
+  --color-diff-hunk: var(--color-diff-hunk);
+  --color-diff-hunk-fg: var(--color-diff-hunk-fg);
+
+  /* 语义色 · 标签 */
+  --color-tag: var(--color-tag);
+  --color-tag-foreground: var(--color-tag-foreground);
+
+  /* 语义色 · 终端（terminal-panel / 命令回显） */
+  --color-terminal-bg: var(--color-terminal-bg);
+  --color-terminal-fg: var(--color-terminal-fg);
+  --color-terminal-cursor: var(--color-terminal-cursor);
+  --color-terminal-green: var(--color-terminal-green);
+  --color-terminal-yellow: var(--color-terminal-yellow);
+  --color-terminal-blue: var(--color-terminal-blue);
+  --color-terminal-red: var(--color-terminal-red);
+  --color-terminal-cyan: var(--color-terminal-cyan);
+  --color-terminal-magenta: var(--color-terminal-magenta);
+  --color-terminal-bright-black: var(--color-terminal-bright-black);
+  --color-terminal-bright-white: var(--color-terminal-bright-white);
+
+  /* 语义色 · R3 增补（消息卡 / 徽标 / 额度 / 闲时任务） */
+  --color-msg-user-bg: var(--color-msg-user-bg);
+  --color-msg-user-border: var(--color-msg-user-border);
+  --color-await-badge: var(--color-await-badge);
+  --color-await-badge-bg: var(--color-await-badge-bg);
+  --color-quota-1: var(--color-quota-1);
+  --color-quota-2: var(--color-quota-2);
+  --color-quota-3: var(--color-quota-3);
+  --color-quota-track: var(--color-quota-track);
+  --color-idle-task: var(--color-idle-task);
+  --color-idle-task-surface: var(--color-idle-task-surface);
+
+  /* 语义色 · git 状态（审查面板行图标） */
+  --color-git-modified: var(--color-git-modified);
+  --color-git-added: var(--color-git-added);
+  --color-git-deleted: var(--color-git-deleted);
+  --color-git-renamed: var(--color-git-renamed);
+  --color-git-untracked: var(--color-git-untracked);
+
+  /* 语义色 · 调用轨迹（P1 预留，先照映射） */
+  --color-trajectory-user: var(--color-trajectory-user);
+  --color-trajectory-assistant: var(--color-trajectory-assistant);
+  --color-trajectory-reasoning: var(--color-trajectory-reasoning);
+  --color-trajectory-tool-call: var(--color-trajectory-tool-call);
+  --color-trajectory-tool-result: var(--color-trajectory-tool-result);
+
+  /* 语义色 · toast（F28 错误/断线） */
+  --color-toast: var(--color-toast);
+  --color-toast-foreground: var(--color-toast-foreground);
+
+  /* 语义色 · R5 增补（workflow-run 参照页，P1 动态工作流） */
+  --color-workflow-rule: var(--color-workflow-rule);
+  --color-workflow-trace: var(--color-workflow-trace);
+  --color-workflow-trace-strong: var(--color-workflow-trace-strong);
+}
