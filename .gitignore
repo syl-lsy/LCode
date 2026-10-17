@@ -17,6 +17,8 @@ build/
 *.tsbuildinfo
 
 # Env & secrets（密钥只进环境变量，.env 永不入库）
+# 注意：.env.example / .env.test.example 是模板，必须有两条 ! 负向规则放行
+# （否则被 .env.* 通配吞掉；CI 的 test_env_templates 守门要读它们）
 .env
 .env.*
 !.env.example
@@ -34,7 +36,12 @@ Thumbs.db
 /data/
 
 # Project tooling state (local only)
-.zcode/
-.mimosa/
-.playwright-mcp/
-.scratch/
+.zcode/*
+.mimosa/*
+.playwright-mcp/*
+.scratch/*
+
+# 本地专用资产（文件保留在磁盘，不上传 GitHub；各自有独立本地 git 仓库）
+docs/
+design/
+out/
