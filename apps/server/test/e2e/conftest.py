@@ -44,12 +44,15 @@ def _group_alive(pgid: int) -> bool:
     """探测进程组是否仍有可终止的存活成员（信号 0 只做存在性检查）。
 
     EPERM（macOS 对僵尸组的行为，见 _signal_group 注释）视为"无存活成员"。
+    用 `contextlib.suppress` 而非 `except`：显式元组参数，避免 PEP 758 的无括号
+    多异常形式（`except A, B:` 在 3.14 合法但形似 py2 语法，易被误读者/工具误判）；
+    与 `_signal_group` 保持同一风格。
     """
-    try:
+    with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(pgid, 0)
         return True
-    except ProcessLookupError, PermissionError:
-        return False
+
+    return False
 
 
 def _stop_service() -> None:

@@ -74,6 +74,16 @@ async def _text() -> str:
     return "plain text"
 
 
+@router.get(
+    "/api/_test_default_response",
+    response_model=ItemOut,
+    responses={"default": {"description": "M2 手写兜底响应（非数字状态码键）"}},
+)
+async def _default_response() -> ItemOut:
+    """回归：非数字状态码键（`default`）不得让 /openapi.json 生成崩溃（曾 int() 抛 ValueError）。"""
+    return ItemOut(name="n", qty=1)
+
+
 _TEMP_PATHS = (
     "/api/_test_item",
     "/api/_test_item_again",
@@ -81,6 +91,7 @@ _TEMP_PATHS = (
     "/api/_test_ints",
     "/api/_test_inline",
     "/api/_test_text",
+    "/api/_test_default_response",
     "/_test_plain",
 )
 
@@ -174,6 +185,20 @@ def test_non_200_responses_removed_for_api_paths():
     schema = _get_schema()
     responses = schema["paths"]["/api/_test_items"]["get"]["responses"]
     assert set(responses.keys()) == {"200"}  # FastAPI 自动生成的 422 文档条目被删除
+
+
+def test_non_numeric_status_key_is_removed_without_crashing():
+    """回归：手写 `responses={"default": ...}` 不得让 /openapi.json 生成崩溃。
+
+    非数字键不是成功响应 → 与其他非 200/201 条目一致地被删除（错误格式统一由
+    `generate_error_docs()` 在 API 描述里说明）；曾因 `int(status_code_str)` 抛
+    ValueError 使文档生成 500，故加 isdigit() 防御 + 本用例守门。
+    """
+    schema = _get_schema()
+    responses = schema["paths"]["/api/_test_default_response"]["get"]["responses"]
+
+    assert "default" not in responses
+    assert set(responses.keys()) == {"200"}
 
 
 def test_non_api_path_schema_untouched():

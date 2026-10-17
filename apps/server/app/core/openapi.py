@@ -112,6 +112,13 @@ def setup_openapi(app: FastAPI) -> None:
 
                 responses = operation.get("responses", {})
                 for status_code_str, response in list(responses.items()):
+                    # 非数字键（如手写 `responses={"default": ...}`）不是 200/201 → 与
+                    # 其他非成功响应一致地删除；不能直接 int()（ValueError 会让整个
+                    # /openapi.json 生成 500）
+                    if not status_code_str.isdigit():
+                        del responses[status_code_str]
+                        continue
+
                     status_code = int(status_code_str)
                     if status_code not in (200, 201):
                         del responses[status_code_str]

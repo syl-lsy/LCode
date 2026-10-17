@@ -34,19 +34,24 @@ if config.config_file_name is not None:
 target_metadata = Base.metadata
 
 
-def _database_url() -> str:
-    """构造连库 URL，并把 `%` 转义为 `%%`。
+def _database_url(*, for_configparser: bool) -> str:
+    """构造连库 URL；两种调用口径的 `%` 处理不同（别合并成一个函数体）。
 
-    原因：URL 注入 configparser 后，单个 `%` 会被当作插值占位符（密码里带 `%` 时
-    会报 InterpolationSyntaxError），必须按 configparser 语法转义。
+    - `for_configparser=True`（在线模式）：URL 经 `config.set_main_option` 注入 ini，
+      configparser 会把单个 `%` 当插值占位符（密码含 `%` 时抛
+      `InterpolationSyntaxError`）→ 必须按 configparser 语法转义为 `%%`；
+    - `for_configparser=False`（离线 `--sql` 模式）：URL 直接交给方言渲染，
+      **不经过 configparser** → 必须保持原样，否则 `%%` 会被当作 URL 字面量
+      （`render_as_string` 的结果里密码会多出字符，渲染出错误的连接串）。
     """
-    return build_database_url().render_as_string(hide_password=False).replace("%", "%%")
+    url = build_database_url().render_as_string(hide_password=False)
+    return url.replace("%", "%%") if for_configparser else url
 
 
 def run_migrations_offline() -> None:
     """离线模式：只渲染 SQL 不连库（URL 取自配置组而非 ini）。"""
     context.configure(
-        url=_database_url(),
+        url=_database_url(for_configparser=False),
         target_metadata=target_metadata,
         literal_binds=True,
         dialect_opts={"paramstyle": "named"},
@@ -65,7 +70,8 @@ def do_run_migrations(connection: Connection) -> None:
 
 async def run_async_migrations() -> None:
     """在线模式：async engine（asyncpg）；NullPool 避免迁移期连接池残留。"""
-    config.set_main_option("sqlalchemy.url", _database_url())
+    # 注入 ini 的 URL 必须走 configparser 转义（详见 _database_url docstring）
+    config.set_main_option("sqlalchemy.url", _database_url(for_configparser=True))
 
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),

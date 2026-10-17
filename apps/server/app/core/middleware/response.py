@@ -11,8 +11,10 @@
   （否则本中间件消费 `body_iterator` 会把流式响应拼成整块 JSON），或把路由放在
   `/api/` 外；204/304/1xx 与 HEAD 由状态码与请求方法判定跳过；
 - **非 JSON 响应**（PlainTextResponse / FileResponse 等）不要挂 `/api/` 前缀：
-  响应体会在 `json.loads` 处解析失败被兜底转成 INTERNAL——这类端点同样须自设
-  `is_stream` 或移出 `/api/` 前缀。
+  本中间件在 `json.loads` 处解析失败会**直接抛出**，而响应中间件注册在用户中间件栈之外，
+  异常将穿透 ExceptionMiddleware 直达最外层 ServerErrorMiddleware——客户端拿到的是
+  **纯文本 500**（不是统一 `{code, message}` 体，也没有任何兜底转换）。这类端点须自设
+  `is_stream` 标志或移出 `/api/` 前缀。
 
 包装时重建 `JSONResponse`：status_code 沿用原响应，响应头逐条从原 `raw_headers`
 搬运（剔除 content-length，新长度由信封体重算）——**不能用 `dict(headers)` 折叠**，
