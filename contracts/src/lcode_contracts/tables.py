@@ -152,7 +152,10 @@ TABLES: list[TableSpec] = [
     ),
     _t(
         "approvals",
-        "审批记录（REQ-006/013）：决策人/时间/决策留痕（AC-006-2）；pending 为挂起态（AC-006-5）",
+        "审批记录（REQ-006/013）：决策人/时间/决策留痕（AC-006-2）；pending 为挂起态（AC-006-5）。"
+        "AUTO 模式（REQ-013 Must）下分类器每次决策落一行（status=auto_approved、"
+        "decided_by='classifier'、reason=分类器理由、decided_at 记时）——AC-013-3 决策留痕与"
+        "PRD 10.2 风险表「AUTO 决策全量留痕可审计」的唯一审计面；人工四决策仍经决策端点落行",
         [
             ColumnSpec.fk("session_id", "sessions.id"),
             ColumnSpec.fk("run_id", "runs.id", nullable=True),
@@ -162,7 +165,8 @@ TABLES: list[TableSpec] = [
             ColumnSpec(name="risk_level", type="varchar", enum_values=["medium", "high"]),
             ColumnSpec(name="reason", type="text", nullable=True),
             ColumnSpec(name="status", type="varchar", default="'pending'",
-                       enum_values=["pending", "approved", "rejected", "edited", "responded"]),
+                       enum_values=["pending", "approved", "rejected", "edited", "responded",
+                                    "auto_approved"]),
             ColumnSpec(name="decision", type="varchar", nullable=True,
                        enum_values=["approve", "edit", "reject", "respond"]),
             ColumnSpec(name="scope", type="varchar", enum_values=["once", "session"], default="'once'"),

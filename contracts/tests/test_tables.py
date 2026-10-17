@@ -159,3 +159,22 @@ def test_unique_indexes_for_ordering_and_rounds() -> None:
         assert any(i.unique and i.columns == cols for i in spec.indexes), (
             f"{name} 缺唯一索引 {cols}（顺序/轮次唯一性依赖它）"
         )
+
+
+def test_approvals_auto_audit_surface() -> None:
+    """AC-013-3：AUTO 决策留痕面 = approvals 行（status=auto_approved，不加列）。
+
+    机器锚：① status 值域含 auto_approved 且与 ApprovalItem.status 对应（test_rest 侧锁定）；
+    ② decided_by/decided_at/reason 列齐备（留痕三要素）；③ 表规格 description 冻结该语义。
+    """
+    spec = TABLES_BY_NAME["approvals"]
+    status = next(c for c in spec.columns if c.name == "status")
+    assert set(status.enum_values or []) == {
+        "pending", "approved", "rejected", "edited", "responded", "auto_approved",
+    }
+    assert status.default == "'pending'"  # 人工路径默认挂起态；auto_approved 仅分类器路径写入
+    cols = {c.name: c for c in spec.columns}
+    for name in ("decided_by", "decided_at", "reason"):
+        assert name in cols and cols[name].nullable, f"留痕列 {name} 必须可空存在"
+    assert "auto_approved" in spec.description, "AUTO 留痕语义必须冻结在表规格 description"
+    assert "classifier" in spec.description

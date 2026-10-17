@@ -30,6 +30,12 @@ export interface MessagePage {
   items: Items;
   next_cursor?: NextCursor;
 }
+/**
+ * 消息历史投影（GET /sessions/{id}/messages，供导出/检索；面板重建走事件流）。
+ *
+ * 不含 thinking：历史导出不携带思考内容（回放路径有——message_delta(kind=thinking)
+ * 事件流；messages 表 thinking 列仍照常落库），本投影取最小面。
+ */
 export interface MessageItem {
   agent_id?: AgentId;
   content: Content;

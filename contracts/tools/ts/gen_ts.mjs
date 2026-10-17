@@ -6,8 +6,9 @@
  *   回退文件名词的 PascalCase（如 event_union 的 RootModel[Union[...]] → EventUnion）；
  * - zod 导出名 = <接口名>Schema；对生成器 API 版本差异做了 export/import 兜底；
  * - 各目录 index.ts 只显式转发主类型/主 schema（嵌套标题生成的辅助别名跨文件同名）；
- * - TS 侧校验强度为 JSON Schema 可表达子集（pattern/跨字段校验只在 Python 侧
- *   强制，见 README「两侧校验强度差异」）。
+ * - zod 侧先对 $defs 深度内联再生成（json-schema-to-zod 不解析 $ref，不内联则全落 z.any()）；
+ * - TS 侧校验强度为 JSON Schema 可表达子集：跨字段 model_validator 只在 Python 侧强制
+ *   （实测口径 = tools/ts/validate_fixtures.mjs 的豁免清单，见 README「两侧校验强度差异」）。
  */
 import { readdir, readFile, writeFile, mkdir } from "node:fs/promises";
 import path from "node:path";
@@ -48,6 +49,49 @@ function typeNameFrom(schema, parsed) {
   return isValidTsIdentifier(schema.title) ? schema.title : pascal(parsed.name);
 }
 
+/**
+ * $defs 深度内联解引用（仅用于 zod 生成）。
+ *
+ * json-schema-to-zod v2 不解析 $ref（源码无 $ref 分支）——不内联时所有引用落 z.any()，
+ * 嵌套结构（AgentRef/Usage/ToolErrorObj 等）全部失防。本契约经全量扫描确认无递归引用
+ * （有向图无环、ref 全为 #/$defs/<name> 形态），深度内联安全；一旦未来引入递归引用，
+ * 这里显式报错而不是死循环。types 侧（json-schema-to-typescript）原生支持 $defs，
+ * 保持命名类型引用，不内联（可读性）。
+ */
+function inlineDefs(schema) {
+  const defs = schema.$defs || {};
+  const resolving = new Set();
+  function resolve(node) {
+    if (Array.isArray(node)) return node.map(resolve);
+    if (node && typeof node === "object") {
+      if (typeof node.$ref === "string") {
+        const m = node.$ref.match(/^#\/\$defs\/([^/]+)$/);
+        if (m && m[1] in defs) {
+          const name = m[1];
+          if (resolving.has(name)) {
+            throw new Error(`$defs 存在递归引用（${name}），内联解引用不支持——需改造生成管线`);
+          }
+          resolving.add(name);
+          const resolved = resolve({ ...defs[name] });
+          resolving.delete(name);
+          const siblings = Object.fromEntries(
+            Object.entries(node).filter(([k]) => k !== "$ref"),
+          );
+          return Object.keys(siblings).length > 0 ? { ...resolved, ...siblings } : resolved;
+        }
+      }
+      const out = {};
+      for (const [k, v] of Object.entries(node)) {
+        if (k === "$defs") continue;
+        out[k] = resolve(v);
+      }
+      return out;
+    }
+    return node;
+  }
+  return resolve(schema);
+}
+
 /** 把生成器输出规整为"带 export 的模块"：兼容裸表达式 / 无 export 的 const / 已完整三种形态 */
 function normalizeZodModule(raw, exportName) {
   let out = raw.trim();
@@ -81,8 +125,9 @@ for (const rel of rels) {
   // compile 的命名以 schema.title 优先于 name 参数 —— 非法 title 覆盖为派生名，
   // 保证 types 侧主类型名与 zod 侧导出名一致（其余文件 title === typeName，无影响）。
   const typesTs = await compile({ ...schema, title: typeName }, typeName, { bannerComment: "" });
+  // zod 侧先做 $defs 深度内联（否则 $ref 全部落 z.any()，见 inlineDefs 注释）
   const zodTs = normalizeZodModule(
-    jsonSchemaToZod(schema, { name: `${typeName}Schema` }),
+    jsonSchemaToZod(inlineDefs(schema), { name: `${typeName}Schema` }),
     `${typeName}Schema`,
   );
 

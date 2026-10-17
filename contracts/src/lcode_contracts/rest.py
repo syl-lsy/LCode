@@ -13,7 +13,8 @@ SSE 传输语义（GET /api/v1/sessions/{session_id}/events）：
   无缝）；AC-003-3「已收到内容不丢」由重放保证；
 - 流前错误（会话不存在等）以普通 REST 错误体返回；流中业务错误走 run_status 事件。
 
-分页约定：游标分页（next_cursor 为空表示尾页），不做 offset 深翻页。
+分页约定：游标分页（next_cursor 为空表示尾页），不做 offset 深翻页；游标端点 =
+messages / approvals 列表（会话列表为全量 + total，无游标——列表小，检索靠 title 子串）。
 ID 约定：服务端生成的 id 为 UUID 字符串；wire 层不携带前缀。
 """
 
@@ -92,6 +93,12 @@ class MessageSendAck(ContractModel):
 
 
 class MessageItem(ContractModel):
+    """消息历史投影（GET /sessions/{id}/messages，供导出/检索；面板重建走事件流）。
+
+    不含 thinking：历史导出不携带思考内容（回放路径有——message_delta(kind=thinking)
+    事件流；messages 表 thinking 列仍照常落库），本投影取最小面。
+    """
+
     id: str
     role: Literal["user", "assistant"]
     content: str
@@ -115,14 +122,25 @@ class StopRunAck(ContractModel):
 # ---------------------------------------------------------------- 审批
 
 class ApprovalItem(ContractModel):
+    """审批行投影（GET /approvals 列表/详情；与 approvals 表逐值对应）。
+
+    - status 含 auto_approved：AUTO 模式分类器决策的落行（decided_by='classifier'，
+      审计面见 contracts/README「表规格补充语义」/ REQ-013 AC-013-3）；
+    - reason：命中哪条规则/分类器理由——pending 卡片恢复（AC-006-5）必须展示，
+      故进 REST 投影；
+    - 其余决策载荷（edited_args/feedback）以 approval_resolved 事件回放为准，
+      不重复投影（列表仅承载卡片恢复与筛选所需字段）。
+    """
+
     id: str
     session_id: str
     tool: str
     args: dict[str, Any]
     risk_level: Literal["medium", "high"]
-    status: Literal["pending", "approved", "rejected", "edited", "responded"]
+    status: Literal["pending", "approved", "rejected", "edited", "responded", "auto_approved"]
     decision: Literal["approve", "edit", "reject", "respond"] | None = None
     scope: Literal["once", "session"] = "once"
+    reason: str | None = None
     created_at: datetime
     decided_at: datetime | None = None
 
@@ -237,13 +255,41 @@ class SessionCost(ContractModel):
 class SandboxStatus(ContractModel):
     provider: SandboxProvider
     sandbox_id: str | None = None
-    phase: Literal["none", "creating", "running", "paused", "killed", "crashed"]
+    phase: Literal["none", "creating", "running", "paused", "killed", "crashed"] = Field(
+        description=(
+            "当前状态投影（查询面）。事件侧 SandboxOutputEvent.phase 的迁移动作在此折叠："
+            "resumed/recreated → running（动作不是稳态）；none = 尚无沙箱实例。"
+            "两枚举差异为有意设计——事件记迁移（含动作），状态只表达稳态"
+        )
+    )
     running_since: datetime | None = None
     paused_since: datetime | None = None
     cost_estimate: SandboxCostEstimate | None = None
 
 
 # ---------------------------------------------------------------- 端点注册表
+
+class QueryParamSpec(ContractModel):
+    """查询参数规格（wire 名 / 语义类型 / 必填 / 枚举值域）。
+
+    前端 URL 构造与后端解析的唯一契约面；参数名冻结后变更走增量 diff。
+    仅建模查询参数（query string）；路径参数由 path 模板（{...}）承载。
+    """
+
+    name: str
+    type: Literal["string", "int", "enum"]
+    required: bool = False
+    enum: list[str] | None = None  # 仅 type=enum：非空值域
+    description: str = ""
+
+    @model_validator(mode="after")
+    def _check_enum(self) -> "QueryParamSpec":
+        if self.type == "enum" and not self.enum:
+            raise ValueError("type=enum 时必须给出非空 enum 值域")
+        if self.type != "enum" and self.enum is not None:
+            raise ValueError("enum 值域仅在 type=enum 时允许出现")
+        return self
+
 
 class EndpointSpec(ContractModel):
     method: Literal["GET", "POST", "PATCH", "DELETE"]
@@ -252,6 +298,7 @@ class EndpointSpec(ContractModel):
     request: str | None = None   # DTO 名（REST_DTOS 键）
     response: str | None = None  # DTO 名（REST_DTOS 键）；SSE 端点为 null
     sse: bool = False
+    query: list[QueryParamSpec] = Field(default_factory=list)  # 查询参数（名/型/必填/值域）
     errors: list[RestErrorCode] = Field(default_factory=list)
 
 
@@ -260,7 +307,9 @@ ENDPOINTS: list[EndpointSpec] = [
                  request="SessionCreate", response="SessionDetail",
                  errors=["INVALID_ARGUMENT", "MODEL_NOT_FOUND"]),
     EndpointSpec(method="GET", path="/api/v1/sessions", summary="会话列表（按最近活跃排序，标题搜索，AC-004-3）",
-                 response="SessionPage"),
+                 response="SessionPage",
+                 query=[QueryParamSpec(name="title", type="string",
+                                       description="标题子串搜索定位（AC-004-3）")]),
     EndpointSpec(method="GET", path="/api/v1/sessions/{session_id}", summary="会话详情（含 run_state 刷新恢复）",
                  response="SessionDetail", errors=["SESSION_NOT_FOUND"]),
     EndpointSpec(method="PATCH", path="/api/v1/sessions/{session_id}", summary="更新会话（模型/档位热切换 AC-014-2、模式切换）",
@@ -272,9 +321,13 @@ ENDPOINTS: list[EndpointSpec] = [
                  request="MessageCreate", response="MessageSendAck",
                  errors=["SESSION_NOT_FOUND", "MESSAGE_EMPTY", "RUN_ALREADY_ACTIVE"]),
     EndpointSpec(method="GET", path="/api/v1/sessions/{session_id}/messages", summary="消息历史（游标分页；面板重建走事件流，本端点供导出/检索）",
-                 response="MessagePage", errors=["SESSION_NOT_FOUND"]),
+                 response="MessagePage", errors=["SESSION_NOT_FOUND"],
+                 query=[QueryParamSpec(name="cursor", type="string",
+                                       description="游标分页：请求值 = 上一页响应 MessagePage.next_cursor；缺省取第一页")]),
     EndpointSpec(method="GET", path="/api/v1/sessions/{session_id}/events", summary="SSE 事件流（重放+实时；Last-Event-ID/after_seq 断线续传）",
-                 response=None, sse=True, errors=["SESSION_NOT_FOUND"]),
+                 response=None, sse=True, errors=["SESSION_NOT_FOUND"],
+                 query=[QueryParamSpec(name="after_seq", type="int",
+                                       description="断线续传水位（仅当无 Last-Event-ID 请求头时生效；头优先，见模块 docstring）")]),
     EndpointSpec(method="GET", path="/api/v1/sessions/{session_id}/costs", summary="会话成本（模型+沙箱，AC-015-3）",
                  response="SessionCost", errors=["SESSION_NOT_FOUND"]),
     EndpointSpec(method="GET", path="/api/v1/sessions/{session_id}/sandbox", summary="沙箱状态与费用估算（AC-015-4）",
@@ -282,7 +335,13 @@ ENDPOINTS: list[EndpointSpec] = [
     EndpointSpec(method="POST", path="/api/v1/runs/{run_id}/stop", summary="停止运行（AC-001-2，幂等）",
                  response="StopRunAck", errors=["RUN_NOT_FOUND", "RUN_NOT_ACTIVE"]),
     EndpointSpec(method="GET", path="/api/v1/approvals", summary="审批列表（status=pending 恢复挂起卡片，AC-006-5）",
-                 response="ApprovalPage"),
+                 response="ApprovalPage",
+                 query=[QueryParamSpec(name="status", type="enum",
+                                       enum=["pending", "approved", "rejected", "edited",
+                                             "responded", "auto_approved"],
+                                       description="按状态过滤（AC-006-5 刷新恢复用 status=pending）"),
+                        QueryParamSpec(name="session_id", type="string",
+                                       description="按会话过滤")]),
     EndpointSpec(method="GET", path="/api/v1/approvals/{approval_id}", summary="审批详情",
                  response="ApprovalItem", errors=["APPROVAL_NOT_FOUND"]),
     EndpointSpec(method="POST", path="/api/v1/approvals/{approval_id}/decide", summary="审批决策（四决策 + resume，REQ-006）",
@@ -291,10 +350,13 @@ ENDPOINTS: list[EndpointSpec] = [
     EndpointSpec(method="GET", path="/api/v1/models", summary="模型列表（能力过滤的档位集合，AC-014-1/3）",
                  response="ModelList"),
     EndpointSpec(method="GET", path="/api/v1/costs/summary", summary="成本三维汇总（会话/日/模型，AC-015-2）",
-                 response="CostSummary"),
+                 response="CostSummary",
+                 query=[QueryParamSpec(name="dimension", type="enum",
+                                       enum=["session", "date", "model"], required=True,
+                                       description="汇总维度（AC-015-2 三维，必填）")]),
     EndpointSpec(method="GET", path="/api/v1/diff-reviews/{review_id}", summary="diff 审查详情（逐文件摘要）",
                  response="DiffReviewDetail", errors=["DIFF_REVIEW_NOT_FOUND"]),
-    EndpointSpec(method="GET", path="/api/v1/diff-reviews/{review_id}/files/{file_path}", summary="单文件完整 patch（审查面板加载）",
+    EndpointSpec(method="GET", path="/api/v1/diff-reviews/{review_id}/files/{file_path}", summary="单文件完整 patch（审查面板加载；file_path 为路径参数且含 `/`，实现必须用 :path 路由转换器）",
                  response="DiffFileDetail", errors=["DIFF_REVIEW_NOT_FOUND", "NOT_FOUND"]),
     EndpointSpec(method="POST", path="/api/v1/diff-reviews/{review_id}/verdict", summary="diff 裁决（accepted 后创建基线提交，AC-007-3/4）",
                  request="DiffVerdictRequest", response="DiffReviewDetail",

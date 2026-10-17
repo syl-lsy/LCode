@@ -8,13 +8,22 @@
 | 域 | 单源文件 | 内容 | 回应需求 |
 |---|---|---|---|
 | 1. 事件协议 | `src/lcode_contracts/events.py`（+`common.py`/`errors.py`） | 六类领域事件族 + run_status 运行状态族；信封字段、每型字段、错误码、跨字段校验 | REQ-008、Q5 定稿 |
-| 2. REST + SSE API | `src/lcode_contracts/rest.py` | 18 端点注册表（ENDPOINTS）+ 23 个 DTO；SSE 帧格式/断线续传语义写在模块 docstring 与本文 | REQ-001/002/004/006/007/014/015 |
+| 2. REST + SSE API | `src/lcode_contracts/rest.py` | 19 端点注册表（ENDPOINTS）+ 23 个 DTO + 查询参数规格（QueryParamSpec）；SSE 帧格式/断线续传语义写在模块 docstring 与本文 | REQ-001/002/004/006/007/014/015 |
 | 3. 数据模型 | `src/lcode_contracts/tables.py` | 10 张表列级规格（列名/类型/可空/默认/枚举值域/索引/外键），SQLAlchemy 2.0 + Alembic 直接可落；`check_invariants()` 机器校验 | REQ-004/015、NFR-008 |
 | 4. 结构化输出 | `src/lcode_contracts/findings.py` | ReviewerFindings（summary + findings[] + coverage），LangChain structured output 直用 | REQ-011、Q6 定稿 |
 | 5. git 基线约定 | `src/lcode_contracts/baseline.py` | `[lcode-baseline]` tag/提交消息规范与 diff 链语义（round-0 起点 → accepted 逐轮推进） | REQ-007、AC-002-5 |
 
 错误码注册表（`errors.py`）：ToolErrorCode（9 值，吸收 tool-fault-tolerance 调研 §4.3）、
 RunErrorCode（5 值）、RestErrorCode（13 值）+ HTTP 映射。
+
+表规格补充语义（评审修正冻结，机器断言见 `tests/test_tables.py`）：
+
+- `approvals.status` 含 **`auto_approved`**：AUTO 模式（REQ-013，Must）下分类器每次
+  决策落一行 approvals（`status=auto_approved`、`decided_by='classifier'`、
+  `reason=分类器理由`、`decided_at` 记时）——这是 AC-013-3「决策留痕」与 PRD 10.2
+  风险表「AUTO 决策全量留痕可审计」的**唯一审计面**（PRD 回填由 PM 增量 diff 处理）；
+- approvals 全状态枚举：`pending / approved / rejected / edited / responded / auto_approved`
+  （pending=挂起态；auto_approved 仅由分类器路径写入，不经人工决策端点）。
 
 ### Q5 定稿摘要（供 PRD 增量 diff 回填）
 
@@ -88,29 +97,45 @@ make -C contracts check     # 绿：全部通过
 
 harness 覆盖（`tests/`）：
 
-- **正例/负例 fixtures**（`tests/fixtures/`）：事件 14 正 + 15 负（缺必填/类型错/
-  枚举外/未知字段/未知 type/跨字段矛盾）、REST 4 正 + 4 负、findings 1 正 + 3 负；
+- **正例/负例 fixtures**（`tests/fixtures/`）：事件 15 正 + 24 负（缺必填/类型错/
+  枚举外/未知字段/未知 type/跨字段矛盾）、REST 5 正 + 4 负、findings 1 正 + 4 负；
   负例被拒是硬断言（`test_invalid_*_rejected`）；
 - **注册表完整性**：每事件 type 必有 canonical fixture；端点引用的 DTO 必在
-  REST_DTOS；错误码 ↔ HTTP 映射全覆盖；
+  REST_DTOS；查询参数规格齐备（名/型/枚举值域）；错误码 ↔ HTTP 映射全覆盖；
 - **数据模型不变量**：全表 user_id/PK/created_at/外键/索引可校验 + 负例可检出；
-- **生成物同步**：generated/json 与单源逐键一致（防手改、防过期）。
+- **生成物同步**：generated/json 与单源逐键一致（防手改、防过期）；generated/ts
+  生成后经 git in-sync 守门（工作区必须与版本库一致）；
+- **fixtures ↔ zod 实测**（`tools/ts/validate_fixtures.mjs`，node 侧）：全部 fixtures
+  过 zod——valid 必接受、invalid 必拒绝，少数豁免仅限 JSON Schema 不可表达的
+  跨字段规则（逐条列明，反向守"清单过期"），见「两侧校验强度差异」。
 
 ### TODO-TS
 
 - `tools/ts-check.sh` 探测 node：**不可用即显式失败**（不静默跳过）；可用则
-  `npm install`（首次，需网络）→ 生成 TS → `tsc --noEmit`；
+  `npm install`（首次，需网络）→ 重新生成 TS → fixture↔zod 实测
+  （`validate_fixtures.mjs`）→ `tsc --noEmit` → generated/ts git in-sync 守门；
+- git in-sync 守门语义：生成后 `git diff --exit-code -- generated/ts` 必须为空、且
+  无未入库新文件——本地"已生成未提交"窗口内红是**预期**（生成物与提交必须同步），
+  暂存/提交生成物后绿；无 git 环境显式提示跳过（不许静默）；
 - 未尽事项（阶段 2 处理）：① 根 `make ci` 挂 `make -C contracts check`；
   ② web/ 以包/别名引入 `contracts/generated/ts`；③ zod 主版本升级评估
   （当前锁 ^3.23 —— 与 json-schema-to-zod 生成代码的 API 面对齐）。
 
-### 两侧校验强度差异（已知且接受）
+### 两侧校验强度差异（实测口径，随评审修正更新）
 
-Python 侧（pydantic）是**超集**：pattern（commit sha）、跨字段 model_validator
-（status↔error、channel↔phase、totals 求和、edit↔edited_args 等）与
-`extra="forbid"` 中，JSON Schema 可表达的部分（required/enum/数值边界）会生成到
-TS 侧；pattern 与跨字段规则在 TS 侧不生效。前端不得依赖 TS 校验兜住语义不变量，
-服务端出口校验（TypeAdapter(Event)）是唯一闸门。
+Python 侧（pydantic）仍是超集，但经生成管线修正后差距收窄到**仅跨字段
+model_validator**（JSON Schema 无法表达；逐条清单 = `tools/ts/validate_fixtures.mjs`
+的 INVALID_EXEMPTIONS，随 fixture 增删同步守门）：
+
+- zod 侧**生效**（生成前做 `$defs` 深度内联解引用，见 `tools/ts/gen_ts.mjs`）：
+  required / enum / 数值边界 / minItems / additionalProperties(strict) / pattern
+  —— 含全部嵌套 `$ref` 结构（AgentRef/Usage/ToolErrorObj/BaselineRef 等）与
+  `EventUnionSchema` 判别联合（12 型），实测面 = fixtures↔zod 校验脚本；
+- zod 侧**不生效**（唯一豁免类）：model_validator 跨字段规则——status↔error、
+  channel↔phase、totals 求和、edit↔edited_args、subject×phase 载荷耦合、
+  strip 空白判定、至少一字段等（16 条事件/REST/findings 负例豁免，逐条注明出处）；
+- 立场不变：前端不得依赖 TS 校验兜住语义不变量，服务端出口校验
+  （`TypeAdapter(Event)`）是唯一闸门。
 
 ## 五、阶段 2 接入挂点
 

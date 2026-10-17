@@ -1,2 +1,2 @@
 import { z } from "zod";
-export const SessionCostSchema = z.object({ "model": z.any(), "model_cost": z.number().gte(0), "sandbox": z.any() }).strict()
+export const SessionCostSchema = z.object({ "model": z.object({ "input_tokens": z.number().int().default(0), "output_tokens": z.number().int().default(0) }).strict().describe("token 用量快照。口径（PRD 硬约束 9）：思考系模型的推理 token 计入 output。"), "model_cost": z.number().gte(0), "sandbox": z.object({ "accrued": z.number(), "currency": z.string().default("CNY"), "rate_per_hour": z.number() }).strict() }).strict()
