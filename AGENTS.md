@@ -13,7 +13,7 @@ LCode 是**个人开发项目**：ZCode 风格的交互式 Coding Agent，定位
 
 **产品形态**：Web 应用。客户端路线图：Web（主）→ Electron 套壳 Desktop → CLI 轻客户端（可选）→ TUI（三期，届时再定"云端看板 vs 本地执行版"）。
 
-**当前状态**：决策基线冻结；**PRD 已定稿**（`docs/PRD.md`，增量 diff 演进，待用户确认后进入 M1）。仓库代码仍未初始化，首个里程碑 M1 = 仓库初始化 + `contracts/` 契约冻结 + 质量门禁工具链就位。所有架构决策已冻结为基线，改动需用户确认。
+**当前状态**：决策基线冻结；**PRD 已定稿**（`docs/PRD.md`，增量 diff 演进，已确认（2026-10-17），进入 M1）。仓库代码仍未初始化，首个里程碑 M1 = 仓库初始化 + `contracts/` 契约冻结 + 质量门禁工具链就位。所有架构决策已冻结为基线，改动需用户确认。
 
 ## 技术栈（冻结基线）
 
@@ -71,7 +71,7 @@ LCode 是**个人开发项目**：ZCode 风格的交互式 Coding Agent，定位
 
 ## 参考文档
 
-- **`docs/PRD.md`（需求唯一事实源，动手前先读）**：版本以文件头版本表与变更记录为准（当前 v1.6，增量 diff 演进）；16 项 P0 需求（REQ-001~016）+ P1/P2 编号占位（REQ-101+/REQ-201+），每条 P0 需求带 Given/When/Then 验收标准；含 NFR-001~008、里程碑 M1-M4（实施顺序：M1 契约 → M2 聊天+沙箱 → M3 审批+diff+planning → M4 扇出+Web 工具）、三栏线框、开放问题（均附建议默认值，条目数以文件第 10 节为准；Q5/Q6 事件 schema 与结构化输出 schema 归 architect 在 contracts/ 定稿）。**需求变更走增量 diff（增/改/废 REQ 编号），不整篇重写**；下游 ui-designer（视觉稿/tokens）与 architect（contracts/ 契约）均以它为输入。
+- **`docs/PRD.md`（需求唯一事实源，动手前先读）**：版本以文件头版本表与变更记录为准（当前 v1.7，增量 diff 演进）；16 项 P0 需求（REQ-001~016）+ P1/P2 编号占位（REQ-101+/REQ-201+），每条 P0 需求带 Given/When/Then 验收标准；含 NFR-001~008、里程碑 M1-M4（实施顺序：M1 契约 → M2 聊天+沙箱 → M3 审批+diff+planning → M4 扇出+Web 工具）、三栏线框、开放问题（均附建议默认值，条目数以文件第 10 节为准；Q5/Q6 事件 schema 与结构化输出 schema 归 architect 在 contracts/ 定稿）。**需求变更走增量 diff（增/改/废 REQ 编号），不整篇重写**；下游 ui-designer（视觉稿/tokens）与 architect（contracts/ 契约）均以它为输入。
 - 百炼 Sandbox 文档：`https://docs.bailian.console.aliyun.com/zh/model-studio/sandbox-introduction`（E2B 兼容接入/pause/计费）
 - OpenSandbox（自托管沙箱备选底座）：`https://github.com/opensandbox-group/OpenSandbox`（阿里系开源、Apache 2.0、15.9k stars、CNCF landscape；Docker/K8s/Firecracker 三后端；五语言 SDK + CLI + MCP server；**自有协议非 E2B 兼容**，本地模式仍依赖 Docker，Firecracker 需 Linux/KVM；1.1.0（2026-09-21）起统一版本治理；调研结论见全局记忆 2026-10-15 沙箱选型条目）
 - deepagents 源码（核心依赖，重点读）：**本地快照 `docs/reference/deepagents-main/`，查 deepagents 源码直接读本地文件，不要联网搜 GitHub**。重点：`docs/reference/deepagents-main/libs/deepagents/deepagents/middleware/`（summarization/filesystem/subagents 等）与 `docs/reference/deepagents-main/libs/deepagents/deepagents/backends/protocol.py`（`SandboxClient` 接缝须对齐的方法面）。读源码前可先看快照根 `openwiki/` 的对应主题导航页（quickstart/architecture/concepts 等，由 openwiki 工具生成、带 sources 溯源；注意 wiki 是验证线索，源码与测试才是权威）
