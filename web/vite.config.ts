@@ -38,14 +38,18 @@ export default defineConfig({
       provider: 'v8',
       include: ['src/**/*.{ts,tsx}'],
       exclude: ['src/**/*.test.{ts,tsx}', 'src/tests/**', 'src/main.tsx'],
-      // A4 §10.5 初始口径：全局 80/70、src/events ≥90。
-      // 骨架期业务代码尚无测试，test:coverage 预期红——门禁命令是 `test`（vitest run），
-      // 覆盖率达标随 M2 各任务的测试补齐兑现。
+      // M2 收口台账 G1（2026-10-19 定档）：阈值挂进门禁命令 `make test-web`
+      // （= vitest run --coverage，经 scripts/vitest-run.mjs 透传）。
+      // 基线（当日 `pnpm --dir web test:coverage` 实测，All files）：
+      //   statements 93.39 / branches 86.14 / functions 94.69 / lines 95.39
+      // 阈值取基线之下、留 4~6 点回退余量；上调前须先复测基线。
+      // src/events（事件管线核心）沿用 A4 §10.5 的 ≥90 单列口径（基线
+      // 97.26/90.88/97.69/99.48，branches 90 为紧约束，退化即红）。
       thresholds: {
-        lines: 80,
-        statements: 80,
-        functions: 80,
-        branches: 70,
+        lines: 90,
+        statements: 85,
+        functions: 85,
+        branches: 80,
         'src/events/**': {
           lines: 90,
           statements: 90,

@@ -7,6 +7,8 @@
 内容无关——否则开发机上的 .env 会让用例结果漂移。
 """
 
+import pytest
+from pydantic import ValidationError
 from pydantic_settings import BaseSettings
 
 from app.core.config import (
@@ -18,6 +20,7 @@ from app.core.config import (
     SandboxSettings,
     SSESettings,
     WebSettings,
+    safe_env_var_name,
 )
 
 
@@ -98,6 +101,9 @@ def test_prefix_isolation(monkeypatch):
 def test_llm_settings_store_key_env_name_not_secret(monkeypatch):
     """密钥引用模式（NFR-004 / A3 §2.2）：LLM_ 组只存环境变量名，不存密钥本体。"""
     monkeypatch.delenv("LLM_API_KEY_ENV", raising=False)
+    # 进程隔离：integration conftest 收集期 load_dotenv(.env.test) 会注入真实 LLM_BASE_URL
+    # （`_env_file=None` 只跳过 .env，仍读进程环境），不清掉会让本用例随环境漂移。
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
     settings = _fresh(LLMSettings)
     assert settings.api_key_env == "DASHSCOPE_API_KEY"
     assert settings.base_url == ""  # 骨架期允许为空；M2 工厂取用时 fail-fast
@@ -133,6 +139,86 @@ def test_sse_and_agent_settings_defaults(monkeypatch):
     assert _fresh(AgentSettings).max_parallel_fanout == 8
 
 
+# ---------------------------------------------------------------- C7: LLM_BASE_URL scheme 校验
+
+
+def _llm_settings_with(
+    monkeypatch: pytest.MonkeyPatch, *, base_url: str, environment: str
+) -> LLMSettings:
+    """按显式基础地址/环境实例化 LLM_ 组（跳过 .env，只看进程环境变量）。"""
+    monkeypatch.setenv("ENVIRONMENT", environment)
+    monkeypatch.setenv("LLM_BASE_URL", base_url)
+    return _fresh(LLMSettings)
+
+
+def test_llm_base_url_accepts_https(monkeypatch):
+    """https 在任何环境都合法（C7：非空时只接受 http/https）。"""
+    settings = _llm_settings_with(
+        monkeypatch, base_url="https://gateway.example/v1", environment="development"
+    )
+    assert settings.base_url == "https://gateway.example/v1"
+
+
+def test_llm_base_url_accepts_https_in_production(monkeypatch):
+    """production + https：唯一被允许的生产组合。"""
+    settings = _llm_settings_with(
+        monkeypatch, base_url="https://gateway.example/v1", environment="production"
+    )
+    assert settings.base_url == "https://gateway.example/v1"
+
+
+def test_llm_base_url_accepts_http_in_development(monkeypatch):
+    """development + http 放行（本地/内网网关调试），便于 M2 spike。"""
+    settings = _llm_settings_with(
+        monkeypatch, base_url="http://127.0.0.1:8080/v1", environment="development"
+    )
+    assert settings.base_url == "http://127.0.0.1:8080/v1"
+
+
+@pytest.mark.parametrize(
+    "base_url",
+    [
+        "ftp://gateway.example/v1",
+        "file:///tmp/gateway",
+        "data:text/plain,x",
+        "gateway.example/v1",  # 无 scheme
+        "//gateway.example/v1",  # 协议相对，无 scheme
+    ],
+)
+def test_llm_base_url_rejects_non_http_schemes(monkeypatch, base_url):
+    """ftp/file/data/无 scheme 一律拒绝（C7）。"""
+    with pytest.raises(ValidationError, match="LLM_BASE_URL"):
+        _llm_settings_with(monkeypatch, base_url=base_url, environment="development")
+
+
+def test_llm_base_url_rejects_http_in_production(monkeypatch):
+    """production + http 拒绝：生产强制 https（C7）。"""
+    with pytest.raises(ValidationError, match="https"):
+        _llm_settings_with(
+            monkeypatch, base_url="http://gateway.example/v1", environment="production"
+        )
+
+
+def test_llm_base_url_allows_empty(monkeypatch):
+    """空串允许（未配置）：production 下同样放行，缺失由 get_llm 调用期 fail-fast。"""
+    monkeypatch.delenv("LLM_BASE_URL", raising=False)
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    assert _fresh(LLMSettings).base_url == ""
+
+
+def test_llm_base_url_error_never_echoes_userinfo_credentials(monkeypatch):
+    """非法 URL 的报错不回显 userinfo/密码/完整 URL（只写字段名与允许 scheme）。"""
+    password = "s3cr3t-pa55"
+    base_url = f"http://alice:{password}@gateway.example/v1"
+    with pytest.raises(ValidationError) as exc_info:
+        _llm_settings_with(monkeypatch, base_url=base_url, environment="production")
+    message = str(exc_info.value)
+    assert "LLM_BASE_URL" in message
+    assert password not in message
+    assert "alice" not in message
+    assert base_url not in message
+
+
 def test_unknown_env_vars_are_ignored(tmp_path, monkeypatch):
     """extra="ignore"：.env 里非配置变量（CI 注入的 CI/GITHUB_* 之类）不报错。"""
     env_file = tmp_path / ".env"
@@ -142,3 +228,31 @@ def test_unknown_env_vars_are_ignored(tmp_path, monkeypatch):
     settings = WebSettings(_env_file=str(env_file))  # type: ignore[call-arg]
 
     assert settings.port == 8123
+
+
+# ---------------------------------------------------------------- 环境变量名安全渲染
+
+
+def test_safe_env_var_name_passes_legal_name_through():
+    """合法环境变量名（字母/下划线开头，仅字母数字下划线）原样返回。"""
+    assert safe_env_var_name("BAILIAN_API_KEY") == "BAILIAN_API_KEY"
+    assert safe_env_var_name("_x9") == "_x9"
+
+
+@pytest.mark.parametrize(
+    "misconfigured",
+    [
+        "sk-unit-test-secret",  # 误填密钥本体
+        "sk-ant-api03-abc.def",  # 密钥形态 + 非法字符
+        "9-START-DIGIT",  # 数字开头
+        "with space",
+        "",
+    ],
+)
+def test_safe_env_var_name_redacts_anything_else(misconfigured: str):
+    """字段语义是「变量名」：非法形态一律固定占位，绝不回显原值（NFR-004）。"""
+    redacted = safe_env_var_name(misconfigured)
+
+    assert redacted == "<非法的环境变量名：疑似填入了密钥本体>"
+    if misconfigured:
+        assert misconfigured not in redacted

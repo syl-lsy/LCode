@@ -37,10 +37,11 @@ Thumbs.db
 /data/
 
 # Project tooling state (local only)
-.zcode/*
-.mimosa/*
-.playwright-mcp/*
-.scratch/*
+# **/ 形式：任意层级（含 apps/server/.zcode、web/.mimosa 等嵌套目录）都忽略（F11）
+**/.zcode/
+**/.mimosa/
+**/.playwright-mcp/
+**/.scratch/
 
 # 本地专用资产（文件保留在磁盘，不上传 GitHub；各自有独立本地 git 仓库）
 docs/

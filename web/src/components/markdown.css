@@ -1,0 +1,80 @@
+/* ==========================================================================
+   markdown 正文与 highlight.js 桥接（A4 §6.2 / 原型 task-conversation .md 规格的
+   utilities 重实现）。只引用 tokens.css 的语义变量，不定义任何裸色值。
+   rehype-highlight 输出 hljs-* 类，这里映射到终端色族（代码块同源配色）。
+   ========================================================================== */
+
+.md-body {
+  font-size: var(--text-ui-sm);
+  line-height: 1.75;
+  color: var(--color-foreground);
+  word-break: break-word;
+}
+
+.md-body > *:first-child { margin-top: 0; }
+.md-body > *:last-child { margin-bottom: 0; }
+.md-body p { margin: 6px 0 10px; }
+.md-body ul, .md-body ol { margin: 8px 0; padding-left: 20px; }
+.md-body li { margin: 3px 0; }
+.md-body h1, .md-body h2, .md-body h3, .md-body h4 {
+  margin: 12px 0 6px;
+  font-size: var(--text-ui-base);
+}
+.md-body blockquote {
+  margin: 8px 0;
+  padding: 2px 12px;
+  border-left: 3px solid var(--color-border-hover);
+  color: var(--color-foreground-subtle);
+}
+.md-body table { border-collapse: collapse; margin: 8px 0; }
+.md-body th, .md-body td {
+  border: 1px solid var(--color-border);
+  padding: 4px 10px;
+  font-size: var(--text-ui-xs);
+}
+.md-body th { background: var(--color-surface); }
+.md-body hr { border: 0; border-top: 1px solid var(--color-border); margin: 12px 0; }
+
+/* 行内 code */
+.md-body code {
+  font-family: var(--font-mono);
+  font-size: var(--code-font-size);
+  background: var(--color-tag);
+  color: var(--color-tag-foreground);
+  border-radius: var(--radius-xs);
+  padding: 1.5px 5px;
+}
+
+/* 代码块（pre > code）：终端同源底色；语言类挂在 code 上 */
+.md-body pre {
+  background: var(--color-terminal-bg);
+  color: var(--color-terminal-fg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+  font-family: var(--font-mono);
+  font-size: var(--code-font-size);
+  line-height: 1.7;
+  overflow-x: auto;
+  margin: 8px 0 14px;
+}
+.md-body pre code {
+  background: none;
+  color: inherit;
+  padding: 0;
+  border-radius: 0;
+  white-space: pre;
+}
+
+/* highlight.js 输出类 → tokens 语义色映射（终端色族；仅 var() 引用） */
+.hljs-comment, .hljs-quote { color: var(--color-terminal-bright-black); font-style: italic; }
+.hljs-keyword, .hljs-selector-tag, .hljs-literal, .hljs-section, .hljs-doctag,
+.hljs-type, .hljs-name, .hljs-strong { color: var(--color-terminal-blue); font-weight: 600; }
+.hljs-string, .hljs-regexp, .hljs-addition { color: var(--color-terminal-green); }
+.hljs-number, .hljs-symbol, .hljs-bullet, .hljs-attr, .hljs-variable,
+.hljs-template-variable { color: var(--color-terminal-yellow); }
+.hljs-title, .hljs-title.function_, .hljs-built_in, .hljs-class .hljs-title { color: var(--color-terminal-cyan); }
+.hljs-attribute, .hljs-meta, .hljs-selector-id, .hljs-selector-class { color: var(--color-terminal-magenta); }
+.hljs-deletion { color: var(--color-terminal-red); }
+.hljs-emphasis { font-style: italic; }
+.hljs-link { color: var(--color-link); text-decoration: underline; }

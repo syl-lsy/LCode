@@ -21,9 +21,9 @@ import tseslint from 'typescript-eslint';
  * - 深于两跳的相对绕行（如 '../../../features/…'）未枚举——A4 规定 features 内部
  *   三段式、不存在更深结构；若 M2 出现更深嵌套或需要正向白名单，改用
  *   eslint-plugin-boundaries 正向分层声明（审查备选一）；
- * - events 写各 feature store 的「正向白名单」无法用 import 模式表达，当前 events
- *   块对 features 全禁属过严口径——M2 任务 4 dispatcher 需要 import 各 feature
- *   store 时，把该块放宽为「仅禁 features/<F>/components 与 @/components」。
+ * - events 块已按 M2 任务 4 落地为「正向白名单」：仅放行 features/<F>/store
+ *   （dispatcher/handlers 是唯一反向写入口，A4 §2.2/§5），feature 组件与
+ *   components/ 仍禁。见文件尾 events 块与 eventsFeatureStorePatterns()。
  *
  * 块序注意：flat config 同一文件命中多个块时，同名规则「后者整体覆盖前者」
  * （不合并 options）。features/<F>/store.ts 同时命中 feature 块与 store 块，
@@ -61,7 +61,7 @@ const CROSS_FEATURE_MESSAGE =
   '禁止跨 feature import（A4 §2.2；唯一例外：chat 的 components/ 可引 approval/todo 卡片，workbench 不进流）；feature 内部用相对路径';
 
 /**
- * Vite 根绝对路径 import（/src/…）与别名指向同一模块，统一禁止，防绕过路径门禁。
+ * Vite 根绝对路径 import（/src/…）与别名指向同一模块，统一禁止，防绕过依赖方向门禁。
  * 形态说明（Linter API 实测）：'/src/**' 与 'src/**' 均匹配不到带前导斜杠的
  * import 源串（gitignore 锚定语义），'**\/src/**' 生效且对 @contracts/相对路径
  * 等合法形态零误伤。
@@ -70,6 +70,26 @@ const ROOT_ABSOLUTE_BAN = {
   group: ['**/src/**'],
   message: '禁止根绝对路径 import（/src/…）：统一走 @/ 别名，防绕过依赖方向门禁',
 };
+
+/** events 块的白名单提示语（store 之外一律禁，含 feature 组件与全局 components/）。 */
+const EVENTS_BAN_MESSAGE =
+  'events/ 只许 import features/<F>/store（dispatcher 是各 feature store 的唯一反向写入口，A4 §2.2/§5）；feature 组件与 components/ 一律禁止';
+
+/**
+ * events → feature store 白名单 patterns（三种等价路径形态 × 七 feature）：
+ * `<base>/**` 先排除整个 feature 目录，`!<base>/store` 反忽略 store 单模块。
+ * 反忽略用 '/store' 精确路径而非 bare 目录（gitignore「父目录排除后不可再包含」
+ * 语义，见文件头 workbenchStore 例外注释的实测记录）。
+ */
+function eventsFeatureStorePatterns() {
+  const patterns = [];
+  for (const name of FEATURES) {
+    for (const base of [`@/features/${name}`, `../features/${name}`, `../../features/${name}`]) {
+      patterns.push(`${base}/**`, `!${base}/store`);
+    }
+  }
+  return patterns;
+}
 
 export default tseslint.config(
   { ignores: ['dist/', 'coverage/', 'node_modules/'] },
@@ -87,7 +107,8 @@ export default tseslint.config(
     },
   },
   {
-    files: ['vite.config.ts', 'eslint.config.js'],
+    // Node 工具层：构建/测试配置 + scripts/（G1 的 vitest-run.mjs 等纯 Node 脚本）
+    files: ['vite.config.ts', 'eslint.config.js', 'scripts/**/*.mjs'],
     languageOptions: {
       globals: { ...globals.node },
     },
@@ -236,7 +257,11 @@ export default tseslint.config(
     },
   },
   {
-    // events：过严口径见文件头「剩余边界」第二条（M2 任务 4 放宽为仅禁 components）
+    // events（A4 §2.2 正向白名单口径，M2 任务 4 落地）：dispatcher/handlers 是各 feature
+    // store 的唯一反向写入口 → 放行 `features/<F>/store`（含 workbench 的三 store 单模块）；
+    // feature 组件（components/**、hooks/** 等）与全局 components/ 仍一律禁止。
+    // 实现沿用 workbenchStore 例外的实测组合：`<base>/**` 先排除、`!<base>/store` 反忽略
+    // （bare 形态受「父目录排除后不可再包含」限制，见文件头注释）。
     files: ['src/events/**/*.ts'],
     ignores: ['src/events/**/*.test.ts'],
     rules: {
@@ -246,15 +271,12 @@ export default tseslint.config(
           patterns: [
             {
               group: [
-                '@/features/**',
+                ...eventsFeatureStorePatterns(),
                 '@/components/**',
-                '../features/**',
                 '../components/**',
-                '../../features/**',
                 '../../components/**',
               ],
-              message:
-                'events/ 不 import React 组件（A4 §2.2）；dispatcher 对 feature store 的白名单 M2 任务 4 落地时放宽（见 eslint.config.js 文件头）',
+              message: EVENTS_BAN_MESSAGE,
             },
             ROOT_ABSOLUTE_BAN,
           ],

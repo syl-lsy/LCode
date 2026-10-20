@@ -1,0 +1,83 @@
+[
+ {
+  "seq": 0,
+  "session_id": "3f1c9a52-6f77-4a0f-9a1e-7b2c4d5e6f70",
+  "run_id": "9d8e7f60-1a2b-4c3d-8e4f-5a6b7c8d9e01",
+  "agent": null,
+  "created_at": "2026-10-17T12:00:00.001000Z",
+  "type": "run_status",
+  "subject": "run",
+  "phase": "started",
+  "error": null,
+  "usage_totals": null,
+  "compact": null
+ },
+ {
+  "seq": 0,
+  "session_id": "3f1c9a52-6f77-4a0f-9a1e-7b2c4d5e6f70",
+  "run_id": "9d8e7f60-1a2b-4c3d-8e4f-5a6b7c8d9e01",
+  "agent": null,
+  "created_at": "2026-10-17T12:00:00.003000Z",
+  "type": "message_delta",
+  "message_id": "assistant-0001",
+  "role": "assistant",
+  "kind": "thinking",
+  "delta": "让我想想怎么回答"
+ },
+ {
+  "seq": 0,
+  "session_id": "3f1c9a52-6f77-4a0f-9a1e-7b2c4d5e6f70",
+  "run_id": "9d8e7f60-1a2b-4c3d-8e4f-5a6b7c8d9e01",
+  "agent": null,
+  "created_at": "2026-10-17T12:00:00.004000Z",
+  "type": "message_delta",
+  "message_id": "assistant-0001",
+  "role": "assistant",
+  "kind": "text",
+  "delta": "你好，"
+ },
+ {
+  "seq": 0,
+  "session_id": "3f1c9a52-6f77-4a0f-9a1e-7b2c4d5e6f70",
+  "run_id": "9d8e7f60-1a2b-4c3d-8e4f-5a6b7c8d9e01",
+  "agent": null,
+  "created_at": "2026-10-17T12:00:00.005000Z",
+  "type": "message_delta",
+  "message_id": "assistant-0001",
+  "role": "assistant",
+  "kind": "text",
+  "delta": "世界！"
+ },
+ {
+  "seq": 0,
+  "session_id": "3f1c9a52-6f77-4a0f-9a1e-7b2c4d5e6f70",
+  "run_id": "9d8e7f60-1a2b-4c3d-8e4f-5a6b7c8d9e01",
+  "agent": null,
+  "created_at": "2026-10-17T12:00:00.006000Z",
+  "type": "message_finished",
+  "message_id": "assistant-0001",
+  "role": "assistant",
+  "finish_reason": "stop",
+  "usage": {
+   "input_tokens": 12,
+   "output_tokens": 9
+  },
+  "structured": null
+ },
+ {
+  "seq": 0,
+  "session_id": "3f1c9a52-6f77-4a0f-9a1e-7b2c4d5e6f70",
+  "run_id": "9d8e7f60-1a2b-4c3d-8e4f-5a6b7c8d9e01",
+  "agent": null,
+  "created_at": "2026-10-17T12:00:00.007000Z",
+  "type": "run_status",
+  "subject": "run",
+  "phase": "finished",
+  "error": null,
+  "usage_totals": {
+   "input_tokens": 12,
+   "output_tokens": 9
+  },
+  "compact": null
+ }
+]

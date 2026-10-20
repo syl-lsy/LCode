@@ -19,6 +19,21 @@ dependencies = [
     # 会返回 405；升级必须先过 sandbox 适配层回归（M2 任务 4 才真正使用这两个依赖）。
     "e2b==2.31.0",
     "e2b-code-interpreter==2.8.1",
+    # Agent 运行时栈（M2 任务 3 起）：版本钉死（项目约定 `==`，uv 解析后收窄范围语法）。
+    # deepagents 钉 0.6.12：本地参考快照为 0.7.25，但 0.7.x 与 e2b==2.31.0（硬约束 1，
+    # 不可动）存在传递依赖冲突，本约束集下不可装——以实际可装版本为准；升级须过装配层回归。
+    "langchain==1.4.6",
+    "langchain-core==1.6.12",
+    # 模型客户端（ADR-007）：ChatAnthropic 直连 Anthropic Messages 兼容网关，保留
+    # thinking/signature（源思维链）。ChatOpenAI 的 OpenAI 兼容路径已移除（其转换层
+    # 丢弃 reasoning_content，源码实测）。deepagents 亦传递依赖本包，此处显式钉
+    # 1.7.6（round-trip 回归锚：test/unit/test_anthropic_thinking.py）。
+    "langchain-anthropic==1.7.6",
+    "langgraph==1.2.16",
+    "langgraph-checkpoint-postgres==3.2.0",
+    "deepagents==0.6.12",
+    "pyyaml==6.0.3",
+    "opensandbox==1.1.1",
 ]
 
 [tool.uv.sources]
@@ -47,10 +62,21 @@ dev = [
     "python-dotenv==1.2.4",
     "debugpy==1.8.22",
     "psycopg2-binary==2.9.13",
+    "types-pyyaml==6.0.12.20250809",
 ]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# 显式豁免标记（test-plan §1.4）：requires_llm = 真模型冒烟，需 LLM_BASE_URL 非空且
+# LLM_API_KEY_ENV 指向的变量已设值；不进 M2 出口门禁，缺环境时显式 skip（非失败）。
+markers = [
+    "requires_llm: 真模型冒烟（需网关地址与密钥），不进 M2 出口门禁（test-plan §1.4/§3.2）",
+    "requires_db: 需要真实 PostgreSQL（.env.test 的 DB_*）；库不可达或 DB_NAME 非 _test 时整层显式 skip（conftest 打 reason）",
+    "requires_sandbox: 真百炼沙箱冒烟（需 BAILIAN_API_KEY 与 SANDBOX_BAILIAN_TEMPLATE），缺凭证显式 skip（test-plan §1.4）",
+    "requires_sandbox_opensandbox: 真自托管 OpenSandbox 冒烟（需 SANDBOX_OPENSANDBOX_ENDPOINT），未部署显式 skip（test-plan §1.4）",
+]
+# -ra：显式 skip（requires_* 缺环境）的 reason 汇总可见——缺基础设施不红，但也不静默消失
+addopts = "-ra"
 # 契约包已以 **editable** 方式进入 workspace 共享 venv（contracts 是可安装的 workspace
 # 成员，见 contracts/pyproject.toml 的 [build-system]）：`import lcode_contracts` 由 venv
 # 直接解析，测试不再需要 `pythonpath` 兜底——三层测试/dev/e2e 的 import 语义由此统一。

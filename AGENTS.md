@@ -13,7 +13,7 @@ LCode 是**个人开发项目**：ZCode 风格的交互式 Coding Agent，定位
 
 **产品形态**：Web 应用。客户端路线图：Web（主）→ Electron 套壳 Desktop → CLI 轻客户端（可选）→ TUI（三期，届时再定"云端看板 vs 本地执行版"）。
 
-**当前状态**：决策基线冻结；**PRD 已定稿**（`docs/PRD.md`，增量 diff 演进）。仓库已初始化（基线 tag `m1-start`）；**M1 完成**（tag `m1-done`）：`contracts/` 契约冻结 v1（五域 + 109 用例自校验 harness + TS/zod 生成管线，经用户评审通过）；`docs/adr/ADR-001~005` 与 `docs/arch/` 前后端架构详设就位；双端脚手架与根质量门禁工具链全绿（`apps/server` 99 用例 / `web/` 22 用例；GitHub Actions CI 已配置，待首次 push 后验证）。**下一步 M2**：聊天 + 沙箱闭环（REQ-001/002/003/004/014/015）。所有架构决策已冻结为基线，改动需用户确认。
+**当前状态**：决策基线冻结；**PRD 定稿**（`docs/PRD.md` v1.8，增量 diff 演进）。**M1 完成**（tag `m1-done`，已推 GitHub，最新 CI run 绿）：`contracts/` 契约冻结 v1（五域 + 109 用例 harness + TS/zod 生成管线）、ADR-001~005 与前后端架构详设、双端脚手架与根门禁工具链。**M2 进行中**（聊天+沙箱，REQ-001~004/014/015）：已落地十表 ORM+迁移+DB 生命周期、`get_llm` 工厂+模型注册表+`GET /models`、前端 SSE 客户端/帧解析器；待落地沙箱双适配器、deepagents 装配与外层图、SSE 端点+发送消息、成本追踪、聊天/终端 UI。所有架构决策已冻结为基线，改动需用户确认。
 
 ## 技术栈（冻结基线）
 
@@ -21,7 +21,7 @@ LCode 是**个人开发项目**：ZCode 风格的交互式 Coding Agent，定位
 - **后端**：Python + FastAPI + SQLAlchemy + PostgreSQL + pgvector
 - **Agent**：LangGraph（外层自建编排图）+ deepagents（内层执行单元，当库用）
 - **执行环境**：百炼 Sandbox（E2B 协议兼容，默认）+ OpenSandbox（自托管备选，阿里开源）双适配器，配置开关一键切换（provider: `bailian | opensandbox`）
-- **模型**：OpenAI 兼容网关，provider 可切换（百炼 Qwen 打头）；不部署 LiteLLM
+- **模型**：Anthropic Messages 兼容网关 + `ChatAnthropic`（保留 thinking/signature 源思维链，ADR-007；`LLM_BASE_URL` 须为 `/v1/messages` 端点）；不部署 LiteLLM
 
 ## 架构总纲：分层混合
 
@@ -39,19 +39,19 @@ LCode 是**个人开发项目**：ZCode 风格的交互式 Coding Agent，定位
 
 | 接缝 | 规则 |
 |---|---|
-| `get_llm(role)` | 模型工厂唯一入口；优先级：请求级 > 会话级 > 角色级 > 模型默认。配置在 `config/models.yaml` |
-| `SandboxClient` | 沙箱抽象，接口设计**必须先对齐 deepagents `backends/protocol.py` 的方法面**，桥接适配器保持薄翻译；双实现 `bailian`（E2B 协议）/ `opensandbox`（自有协议），provider 由配置开关一键切换（切换粒度在 M1 契约定稿），新增 provider = 新增一个实现类，不改上层 |
+| `get_llm(role)` | 模型工厂唯一入口，产出 `ChatAnthropic`（Anthropic Messages 兼容网关，ADR-007）；优先级：请求级 > 会话级 > 角色级 > 模型默认。配置在 `config/models.yaml` |
+| `SandboxClient` | 沙箱抽象必须对齐**已安装版 deepagents 的沙箱协议面**：当前 0.6.12 的 `BaseSandbox` 在 `deepagents.backends.sandbox`（4 个抽象成员：`execute`/`upload_files`/`download_files`/`id`；`backends/protocol.py` 只放 Protocol 与响应类型）；文件操作由基类派生，适配器只做薄翻译；双实现 `bailian`（E2B 协议）/ `opensandbox`（自有协议），provider 会话级切换，新增 provider = 新增一个实现类，不改上层 |
 | 事件协议 | 所有客户端/面板只消费自定义领域事件（`message_delta / tool_call_* / approval_request / diff_ready / sandbox_output / browser_action`），不透传 LangGraph 原始事件；字段级定义以 `contracts/src/lcode_contracts/events.py` 为准（Q5 定稿，含 run_status 运行状态族） |
-| Agent 扩展点 | 唯一机制 = middleware 栈（`create_deep_agent(middleware=[...])`；name 合并/替换语义见快照 `graph.py` 的 `_apply_custom_middleware`）；LCode 业务 middleware 清单与顺序在 M1 ADR「扩展性与 hooks」冻结；P1 hooks = HookBridgeMiddleware 读 `~/.lcode/hooks.json`（REQ-108），插件系统不排期（REQ-109 P2 占位，工具扩展走 MCP） |
+| Agent 扩展点 | 唯一机制 = middleware 栈（`create_deep_agent(middleware=[...])`）。**语义以安装版为准**：0.6.12 把用户 middleware 追加在 base stack 之后、tail stack 之前，**没有**快照 0.7.25 的 `_apply_custom_middleware`（name 合并/替换）——升级前必须重读 `graph.py`。LCode 业务 middleware 清单与顺序在 M1 ADR「扩展性与 hooks」冻结；P1 hooks = HookBridgeMiddleware 读 `~/.lcode/hooks.json`（REQ-108），插件系统不排期（REQ-109 P2 占位，工具扩展走 MCP） |
 | 记忆与持久化 | 双轨（REQ-004 约束）：短期 = LangGraph checkpointer（`AsyncPostgresSaver`，thread_id=会话 ID）**仅运行时断点恢复**，审批 interrupt 依赖它；长期 = REQ-101 三件套（自有表 + pgvector），SDK `StoreBackend` 桥 PostgresStore（namespace 按用户隔离）；**业务事实源 = 自有表**，禁止从 checkpoint 反序列化做展示/审计；`InMemorySaver`/`InMemoryStore` 仅 pytest 用 |
 | 日志 | `app/core/logger/` 是日志唯一出口（ADR-006 / 基座铁律 11）：每请求恰好一条——成功走 logging 中间件（`request_id` 经 contextvars 贯穿全链路），异常经全局处理器从 `request.state.request_log` 按级落；业务日志用 `@service_logger`，慢查询由 `core/db.py` 事件钩子记 DBLog.warning；uvicorn 标准库日志双关（main.py 模块顶 + lifespan，勿删其一）；新增日志一律走 LogRecord 子类体系 |
 
 ## 硬性约束与已知的坑
 
-1. **`e2b==2.31.0` 版本钉死**（更高版本创建百炼沙箱实例返回 405）；`e2b-code-interpreter==2.8.1`
-2. **deepagents 默认栈没有 todo 工具**——planning 需显式装配 LangChain `TodoListMiddleware`
-3. **`top_k` 非 OpenAI 标准参数**——走 `extra_body`（model_kwargs）透传，传顶层会被吞
-4. **reasoning 模型（qwen3 思考系）忽略/禁用 temperature**——工厂层按 `param_support` 剥离并告警
+1. **`e2b==2.31.0` 版本钉死**（更高版本创建百炼沙箱实例返回 405）；`e2b-code-interpreter==2.8.1`。连带约束：**deepagents 只能装 0.6.12**——0.7.x 要求 `wcmatch>=11`，e2b 2.31.0 要求 `wcmatch<11`，解析不可满足；升级 deepagents 前必须先解决 e2b 升级并过百炼回归。`docs/reference/` 的 0.7.25 快照仅供设计参考，查 API 以 `.venv/.../site-packages/deepagents/` 为准
+2. **TodoListMiddleware 是否内置随 deepagents 版本不同**：**安装版 0.6.12 的 base stack 已包含 `TodoListMiddleware`（`write_todos` 默认可用），不要重复装配**（会产生重复工具定义）；0.7.25 快照的栈则没有（历史结论来自该快照）。装配前先读安装版 `graph.py` 确认
+3. **`top_k` 是 Anthropic Messages 顶层标准参数**——`param_support.top_k: native`，工厂直传顶层（ADR-007；旧 ChatOpenAI 的 `extra_body` 口径已移除）。**`langchain-anthropic==1.7.6` 钉死**（thinking/signature round-trip 回归锚：`test/unit/test_anthropic_thinking.py`）；`LLM_BASE_URL` 必须是 Anthropic Messages 兼容端点（`/v1/messages`），OpenAI-only 网关不支持
+4. **thinking 模型忽略/禁用 temperature**——非 thinking 时按 `param_support` 剥离并告警；**thinking 启用时 temperature/top_k 一律剥离并告警**（Anthropic 扩展思考要求温度语义固定，ADR-007）
 5. **沙箱内禁用审批 AUTO 模式**（分类器自动放行仅限非沙箱工具）
 6. **网页内容进上下文前必须消毒**（strip script/style、截断、标记不可信，防提示注入）
 7. **密钥只进环境变量**（`api_key_env` 引用），永不入配置文件/提示词/日志
@@ -68,6 +68,7 @@ LCode 是**个人开发项目**：ZCode 风格的交互式 Coding Agent，定位
 - **TDD 开发模式**：前后端一律测试先行——先写失败测试（红）→ 最小实现（绿）→ 重构；bug 修复先写复现测试再修；新功能的完成判据 = 新增测试通过 + 既有测试全绿（与质量门禁工具链 pytest/vitest 配合）
 - **每日任务记录**：当天工作与任务总结落盘 `docs/daily/`（一文件一天，`YYYY-MM-DD.md`，规则见该目录 README）。每日 23:00 定时任务（自动化"LCode项目每天的完成任务和工作的总结"）自动汇总生成；会话收尾时如当天文件不存在或有重要遗漏，手动补充。性质是进度日志，需求事实源仍是 `docs/PRD.md`
 - **Git 提交规范**（2026-10-17 定）：**只提交工程代码**——文档（`*.md`/README，含本 AGENTS.md）、隐秘信息（.env 系、密钥格式文件）、非工程产物（缓存/覆盖率/日志）一律不入库，规则见 `.gitignore`"Git 提交规范"节；**例外：测试代码必须入库**（CI 门禁 `make test`/`contracts`/`test-web` 依赖全部测试文件，勿对 tests 加 ignore），仅测试产物忽略。被 ignore 的文档属"本地专用资产"：磁盘保留、不上传 GitHub，防丢失靠本地备份而非远端
+- **Agent 不提交 Git**：不运行 `git commit` / `git push`（2026-10-17 用户指令）——改动留在工作区，由用户本人审阅提交
 - **最小方案**：MVP 七件套 = 聊天 + 沙箱执行 + 流式 + 会话持久化 + planning/todo + 工具审批 + diff 可视化。**二期清单（勿提前实现）**：RAG 三件套（长期记忆/代码索引/OpenWiki）、自定义工作流 DSL、浏览器能力、fetch_url 自研、fallback 链、多用户
 - UI 不暴露采样参数（temperature/top_p/top_k），只暴露**模型选择器 + reasoning-effort 档位**
 
@@ -82,6 +83,15 @@ LCode 是**个人开发项目**：ZCode 风格的交互式 Coding Agent，定位
 - LangChain 文档：event-streaming / human-in-the-loop / context-engineering / mcp
 - ZCode 产品参照（**文档官网 `https://zcode.z.ai/cn/docs/welcome`**，设计对标先例库，按需查对应页）：`ADE-tools`（侧边四标签 = 前端信息架构蓝图：审查↔diff_ready、终端↔sandbox_output、浏览器↔browser_action、辅助对话↔同 context 兄弟 thread）、`safety-confirm`（审批先例↔REQ-006/013）、`subagents`（↔REQ-016）、`hooks`（↔REQ-108，语义对照 dcode HOOKS.md）、`plugin`（↔REQ-109 P2 占位）、`repo-wiki`（↔REQ-101 OpenWiki 产品先例）、`memory`（↔REQ-101 长期记忆）、`mcp-services`（↔REQ-012 Web 工具接入）、`skill`/`commands`（P1 技能与命令参考）
 - **UI 活参照**：本机 `http://127.0.0.1:3102`（zcode-webui 跑官方 ZCode 3.15.3，启动/使用/截图注意见 `docs/reference/zcode-ui/README.md`；含 15 张状态截图与全量 design tokens）——前端/UI 工作动手前先看该目录
+
+## 运行环境与版本基线（M2，2026-10-17）
+
+- **Python 3.14 + uv workspace**（根虚拟根、单 `uv.lock`）；**Node 24 + pnpm 10.33.4**（web/）。依赖一律 `==` 钉死。
+- **本机 PostgreSQL 18**：role `lcode`（LOGIN CREATEDB，空密码），库 `lcode`（开发）/ `lcode_test`（测试）。integration conftest 会 DROP/CREATE `lcode_test` 并 `alembic upgrade head`；**安全闸：DB_NAME 不以 `_test` 结尾时拒绝重建**（防误删开发库）；每测 TRUNCATE。
+- **Agent 运行时钉死版本**：`langchain 1.4.6` / `langchain-core 1.6.12` / `langchain-openai 1.7.2` / `langgraph 1.2.16` / `langgraph-checkpoint-postgres 3.2.0` / `deepagents 0.6.12` / `e2b 2.31.0`。
+- **外部依赖冒烟按 marker 显式 skip（非门禁）**：`requires_llm` 需 `LLM_BASE_URL` 非空且 `DASHSCOPE_API_KEY` 已 export；`requires_sandbox` 需 `BAILIAN_API_KEY`；`requires_sandbox_opensandbox` 需 OpenSandbox endpoint。当前均未配置，真模型/真沙箱用例会带 reason 跳过。
+- **YAML 陷阱**：`apps/server/config/models.yaml` 里档位 `off` 裸写会被 PyYAML 解析成布尔 `false`——所有档位值必须加引号。
+- **迁移注意**：`migrations/env.py` 的 `fileConfig(..., disable_existing_loggers=False)` 是有意为之——进程内跑迁移（integration/e2e）时若用默认 `True` 会禁用全部既有 logger。
 
 ## 构建命令
 

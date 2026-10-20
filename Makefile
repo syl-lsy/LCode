@@ -12,10 +12,10 @@ ENV_BOOTSTRAP := test -f .env || cp .env.example .env
 ENV_TEST_BOOTSTRAP := test -f .env.test || cp .env.test.example .env.test
 
 .PHONY: help dev debug dev-web \
-        test test-unit test-integration test-e2e test-web test-changed \
+        test test-unit test-integration test-e2e test-web test-web-fast test-changed \
         lint lint-py lint-web typecheck build-web install-web \
         contracts ci ci-backend ci-frontend \
-        db-migrate db-upgrade db-downgrade clean
+        db-migrate db-upgrade db-downgrade db-check clean
 
 help: ## 列出全部目标（自文档）
 	@grep -hE '^[a-zA-Z0-9_-]+:.*?## ' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-18s %s\n", $$1, $$2}'
@@ -37,10 +37,15 @@ dev-web: ## 前端 dev 服务器（Vite，/api 代理 127.0.0.1:8000；依赖未
 
 # ---------------------------------------------------------------- 测试（三层环，口径见 docs/arch/test-plan-m2.md）
 
-test: ## 后端门禁环：unit+integration，覆盖率 --cov-fail-under=80（e2e 不计覆盖）
+test: ## 后端门禁环：unit+integration，覆盖率 --cov-fail-under=80 + skip 预算门禁（G3，e2e 不计覆盖）
 	@$(ENV_TEST_BOOTSTRAP)
+	@mkdir -p tmp
+	@# --junitxml：pytest 自身非 0（断言失败/覆盖率不足）时 make 立即中止；
+	@# pytest 退出码 0 才继续 skip 预算检查（tmp/ 已 gitignore，产物不入库）
 	uv run pytest apps/server/test/unit/ apps/server/test/integration/ -q \
-		--cov=app --cov-report=term-missing --cov-fail-under=80
+		--cov=app --cov-report=term-missing --cov-fail-under=80 \
+		--junitxml=tmp/junit.xml
+	uv run python scripts/check_skips.py tmp/junit.xml
 
 test-unit: ## 仅后端 unit（全 mock、零网络）
 	uv run pytest apps/server/test/unit/ -q
@@ -53,7 +58,16 @@ test-e2e: ## 后端 e2e：子进程真服务（:18000）；缺 .env.test 自动�
 	@$(ENV_TEST_BOOTSTRAP)
 	uv run pytest apps/server/test/e2e/ -q
 
-test-web: ## 前端 vitest 全量（骨架期不挂覆盖率阈值；阈值随 M2 启用 test:coverage）
+# G1 覆盖率门禁（2026-10-19 定档）：基线 = 当日 `pnpm --dir web test:coverage` 实测
+# All files：statements 93.39 / branches 86.14 / functions 94.69 / lines 95.39；
+# 阈值 lines 90 / statements 85 / functions 85 / branches 80、src/events ≥90，
+# 数值维护在 web/vite.config.ts 的 coverage.thresholds（口径与注释同处）。
+# 注意：`pnpm test -- --coverage` 的参数透传由 web/scripts/vitest-run.mjs 负责
+# （vitest 5 对裸 `--` 之后的选项静默忽略，实测 2026-10-19，勿改回直调 vitest）。
+test-web: ## 前端门禁环：vitest 全量 + v8 覆盖率阈值（web/vite.config.ts thresholds）
+	pnpm --dir web test -- --coverage
+
+test-web-fast: ## 前端开发内环：裸 vitest run（不挂覆盖率，迭代快跑用；替代不了 test-web）
 	pnpm --dir web test
 
 # 开发内环（非门禁）：按 git 变更跑测试文件，语义 = 改了哪个测试跑哪个，源码改动不自动映射。
@@ -92,7 +106,7 @@ contracts: ## 契约单源自校验 = pytest harness + TS 生成/tsc/in-sync 守
 
 # ---------------------------------------------------------------- CI 里程碑环（yml 只调这两个聚合目标；方案 A「每次全跑」）
 
-ci-backend: contracts lint-py test test-e2e ## CI 后端环 = contracts check + ruff/mypy + test(覆盖门禁) + e2e
+ci-backend: contracts lint-py test test-e2e db-check ## CI 后端环 = contracts + ruff/mypy + test(覆盖+skip预算) + e2e + db-check(漂移)
 
 ci-frontend: install-web lint-web typecheck test-web build-web ## CI 前端环 = frozen install + eslint + tsc + vitest + vite build
 
@@ -102,6 +116,13 @@ ci: ci-backend ci-frontend ## 全量里程碑环（本地与 CI 同一入口，�
 # M2 真用（integration/e2e 接 PostgreSQL 后）。本机 Docker 当前不可用，
 # 以 docker-compose 起库的 db-up 类目标**留 M2 TODO**，此处不放红目标。
 # 下列 alembic 目标只要求 Postgres 可达（DB_* 读 .env / .env.test），与 Docker 无关。
+
+db-check: ## G5 漂移门禁：独立临时库 lcode_dbcheck 全量迁移 + alembic check（不碰 lcode_test）
+	@# 生命周期（createdb → upgrade head → check → dropdb）与失败定位由脚本负责，
+	@# 任何一步非 0 即红、离场必清理临时库；口径详见 scripts/db_check.py 头注释。
+	@# 连接参数优先级：真实环境变量 > .env > .env.test（CI 由 workflow job env 注入）。
+	@$(ENV_TEST_BOOTSTRAP)
+	uv run python scripts/db_check.py
 
 db-migrate: ## alembic 自动生成迁移：make db-migrate message="add table x"
 	uv run --package $(SERVICE) alembic -c apps/server/alembic.ini revision --autogenerate -m "$(message)"

@@ -7,8 +7,9 @@
 # - 只跑 ubuntu-latest：Free 私有仓库 2000 分钟/月，Linux 即基准费率；勿加 macOS
 #   （P2 Electron 引入前必须重查费率口径，报告 §6.2）；
 # - .env.test 自举在 Makefile 目标内完成（test -f || cp 模板），干净 checkout 无需额外步骤；
-# - M1 的 CI 不需要任何 secrets（报告 §2.2）；integration/e2e 骨架期不触真实依赖，
-#   requires_* 缺依赖显式跳过；
+# - M1 的 CI 不需要任何 secrets（报告 §2.2）；G4 起 backend job 带 postgres:18 service
+#   （dummy 凭据仅 job 生命周期），integration/e2e 的 DB 实跑；requires_llm/requires_sandbox
+#   类豁免缺依赖显式跳过，skip 预算由 scripts/check_skips.py 门禁兜住（G3）；
 # - 分支保护（required status checks）GitHub Free 私有仓库不生效——本 workflow 先做
 #   advisory 红叉自查，升 Pro 与否留 P2 一起决策（报告 §4.2）。
 
@@ -29,6 +30,34 @@ jobs:
     name: backend
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    # G4（M2 收口台账）：integration/e2e 需要真 PostgreSQL——postgres service 就绪后
+    # make test / test-e2e / db-check 全部实跑（e2e 坏配置会红，不许假绿 skip）。
+    # 凭据为 CI dummy（仅本次 job 生命周期，非真实密钥）。DB_USER=postgres 是
+    # superuser：e2e conftest 走 createdb/dropdb 需要 CREATEDB 权限，
+    # 且库名固定 lcode_e2e_test / integration 用 .env.test 的 lcode_test（互不干扰）。
+    services:
+      postgres:
+        image: postgres:18
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: ci-dummy-pg
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    # job env 注入 DB_ 配置组：Makefile 会从模板自举 .env.test（DB_USER=lcode 等），
+    # 但 conftest 的 load_dotenv(override=False) 保证这里的真实环境变量**优先**——
+    # 这正是 e2e 负控（DB_PORT 覆盖）依赖的同一优先级口径。
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: "5432"
+      DB_NAME: lcode_test
+      DB_USER: postgres
+      DB_PASSWORD: ci-dummy-pg
     steps:
       - uses: actions/checkout@v7
 
@@ -79,8 +108,8 @@ jobs:
           cache: pnpm
           cache-dependency-path: web/pnpm-lock.yaml
 
-      # 骨架期前端**不挂覆盖率硬门禁**：ci-frontend 内 make test-web 跑 `vitest run` 全量
-      # （22 用例）即可；vite.config.ts 的 coverage.thresholds 属 M2 目标，届时把 test-web
-      # 切到 `vitest run --coverage`（package.json 的 test:coverage 已就位）。
+      # G1（M2 收口台账）起前端挂覆盖率硬门禁：ci-frontend 内 make test-web =
+      # `vitest run --coverage`，阈值见 web/vite.config.ts（2026-10-19 按实测基线定档：
+      # lines 90 / statements 85 / functions 85 / branches 80，src/events 单列 ≥90）。
       - name: 质量门禁（make ci-frontend = frozen install + eslint + tsc + vitest + vite build）
         run: make ci-frontend

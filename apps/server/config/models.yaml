@@ -1,0 +1,98 @@
+# LCode 模型注册表（A3 §3.2；get_llm 唯一配置源；M2 任务 3；ADR-007）
+#
+# 约定（backend-design §2.2/§2.3）：
+# - 本文件只存**结构化描述**：密钥永不出现（密钥走 LLM_API_KEY_ENV 引用环境变量名）；
+# - 由 app/agent/models_registry.py 以 Path(__file__) 锚定加载并启动校验
+#   （未知角色/未知模型引用/缺字段 → fail-fast）；
+# - reasoning_efforts 是该模型**声明支持**的档位全集；GET /models 直出时按
+#   supports_reasoning 过滤（非 reasoning 模型恒空表，AC-014-3 置灰依据）；
+# - gateway.protocol 恒 "anthropic"：端点必须是 Anthropic Messages 兼容网关
+#   （/v1/messages）——ChatOpenAI 的 OpenAI 兼容路径已随 ADR-007 移除。
+# ⚠️ YAML 陷阱：档位值 `off` 裸写会被解析成布尔 false（YAML 1.1 off/on/yes/no 保留字），
+#   一律加引号写字符串（"off"）——本文件所有档位出现处已遵守。
+
+gateway:
+  # 网关协议（注册表只接受 "anthropic"；LLM_BASE_URL 须为 Anthropic Messages 兼容端点）
+  protocol: anthropic
+  # 模型默认（优先级链最底层）：角色级未声明 model 时的兜底
+  default_model: qwen3.7-plus
+
+roles:
+  # 角色路由（AC-014-4）；7 角色为固定集（app/agent/models_registry.py KNOWN_ROLES），
+  # 新增角色须同步 Role 字面量与本表（缺一启动即红）。
+  main:                {model: qwen3.7-plus, reasoning_effort: high}    # 主对话旗舰
+  coder:               {model: qwen3.7-plus, reasoning_effort: high}    # 代码执行旗舰
+  reviewer:            {model: qwen3.8-flash, reasoning_effort: medium} # 审查次旗舰
+  explorer:            {model: qwen3.8-flash, reasoning_effort: low}    # 只读探索次旗舰
+  router:              {model: qwen3.6-flash}                           # 经济档：路由
+  summarizer:          {model: qwen3.6-flash}                           # 经济档：摘要
+  approval_classifier: {model: qwen3.6-flash}                           # 经济档：M3 AUTO 分类器
+
+models:
+  qwen3.7-plus:
+    display_name: Qwen 3.7 Plus
+    provider: bailian
+    supports_reasoning: true
+    reasoning_efforts: ["off", "low", "medium", "high"]
+    param_support: {temperature: false, top_k: native}
+    # Anthropic Messages 必需参数（缺省落 SDK 默认 1024 会静默截断输出——ADR-007）
+    max_output_tokens: 131072  # 官方模型页
+    effort_dialect:
+      # 档位预算表（Anthropic thinking 形态：{"type": "enabled", "budget_tokens": N}，
+      # 由 ChatAnthropic.thinking 直传）；"off" 空表 = 不传 thinking（网关自适应）。
+      # 验证状态（2026-10-20）：**仅 high 档经 C5 真调用验证**；low / medium / off 未真调，
+      # 数值为待验证值（勿当成已验证结论）。校准方法：get_llm("main",
+      # effort_override=<档>) 真调一次，逐档核对网关接受性与实际思考长度，只改本表不改
+      # 工厂（test_llm_factory.py::test_effort_dialect_translation 锁「工厂输出 ≡ 本表」，
+      # 是升级回归锚）。
+      # 硬约束：1024 <= budget_tokens < max_output_tokens（Anthropic 扩展思考下限 +
+      # 留输出余量）——上下限由注册表校验；三档单调递增仅由
+      # test_llm_factory.py::test_effort_dialect_translation 锁定（注册表**不**校验
+      # 跨档单调性，U1 spike 校准可能引入非单调的合法形态），具体数值可调。
+      "off":    {}
+      low:    {type: enabled, budget_tokens: 2048}
+      medium: {type: enabled, budget_tokens: 8192}
+      high:   {type: enabled, budget_tokens: 31744}
+    context_window: 1000000  # 官方模型页
+    pricing:
+      # 官方模型页（口径：元 / 百万 token）
+      input_per_mtok: 2.0
+      output_per_mtok: 8.0
+      currency: CNY
+
+  qwen3.8-flash:
+    display_name: Qwen 3.8 Flash
+    provider: bailian
+    supports_reasoning: true
+    reasoning_efforts: ["off", "low", "medium", "high"]
+    param_support: {temperature: false, top_k: native}
+    max_output_tokens: 131072  # 官方模型页
+    effort_dialect:
+      # 验证状态同 qwen3.7-plus：**仅 high 档经 C5 真调用验证**；low / medium / off 未真调
+      # （逐模型核对，预算可能分叉）。
+      "off":    {}
+      low:    {type: enabled, budget_tokens: 2048}
+      medium: {type: enabled, budget_tokens: 8192}
+      high:   {type: enabled, budget_tokens: 31744}
+    context_window: 1000000  # 官方模型页
+    pricing:
+      # 百炼官方模型页（2026-10-20 核对：输入 0.8 / 输出 2.7 元每百万 token）
+      input_per_mtok: 0.8
+      output_per_mtok: 2.7
+      currency: CNY
+
+  qwen3.6-flash:
+    # 官方规格（2026-10-20 百炼模型页核对）：context 1,000,000 / max output 65,536；
+    # 单价取 ≤256K 输入档（256K–1M 档：输入 4.8 / 输出 28.8）
+    display_name: Qwen 3.6 Flash
+    provider: bailian
+    supports_reasoning: false
+    reasoning_efforts: []                    # AC-014-3：前端档位选择器置灰依据
+    param_support: {temperature: true, top_k: native}
+    max_output_tokens: 65536
+    context_window: 1000000
+    pricing:
+      # 百炼官方模型页（2026-10-20 核对；≤256K 输入档）
+      input_per_mtok: 1.2
+      output_per_mtok: 7.2
+      currency: CNY

@@ -8,9 +8,13 @@
 3. 四处异常注册——校验失败 / 协议错误 / 领域异常 / 未知异常兜底；
 4. 路由挂载——`api/v1` 聚合点（M2 逐个 include，M1 为空结构）。
 
-lifespan 槽位：M2 在此启停沙箱管理器与空闲计时（A3 §4.3）；当前只释放引擎连接池。
+lifespan 槽位（A3 §4.3）：启动期起 SandboxManager 的空闲 pause 清扫循环，关闭期对
+running 沙箱显式 pause（保状态可续，硬约束 8）再停循环；EventPipeline 单例在导入期
+装配完成（校验→落库→广播皆惰性），无启停动作，此处显式取用作为装配锚点。
 """
 
+import asyncio
+import contextlib
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -23,11 +27,25 @@ from starlette.exceptions import HTTPException
 from app.api.v1 import api_router
 from app.core.config import common_settings, web_settings
 from app.core.db import dispose_engine, get_engine
-from app.core.logger import setup_logging
+from app.core.logger import BusinessLog, setup_logging
 from app.core.middleware import register_middleware
 from app.core.openapi import setup_openapi
+from app.core.postgres_checkpointer import (
+    setup_postgres_checkpointer_if_requested,
+    teardown_postgres_checkpointer,
+)
+from app.dependencies import (
+    get_event_pipeline,
+    get_sandbox_manager,
+    set_main_loop,
+)
 from app.exception import BusinessException
 from app.exception.handler import exception_handler, generate_error_docs
+from app.sandbox.manager import SandboxManager
+
+IDLE_SWEEP_INTERVAL_S: float = 30.0
+"""空闲清扫周期（秒）：远小于 `SANDBOX_IDLE_PAUSE_SECONDS` 默认阈值（600s），保证
+pause 的触发精度由 evaluate_idle 的阈值判定决定、不被清扫周期放大（AC-002-2）。"""
 
 
 def _silence_uvicorn_loggers() -> None:
@@ -52,6 +70,25 @@ setup_logging()
 _hide_docs = common_settings.environment == "production"
 
 
+async def idle_sweeper(manager: SandboxManager) -> None:
+    """空闲清扫循环（A3 §4.3 / AC-002-2）：按 `IDLE_SWEEP_INTERVAL_S` 周期评估空闲沙箱。
+
+    到阈值且无活跃 run 才 pause 的判定在 `SandboxManager.evaluate_idle`（Q3：run 活跃
+    期间永不暂停）；本循环只负责节拍，单轮异常不终止循环（pause 失败已由 manager 记
+    日志标 crashed）。
+    """
+    while True:
+        await asyncio.sleep(IDLE_SWEEP_INTERVAL_S)
+        try:
+            manager.evaluate_idle()
+        except Exception as exc:  # noqa: BLE001 —— 单轮清扫失败不终止循环
+            BusinessLog(
+                message="沙箱空闲清扫单轮失败（循环继续）",
+                action="清扫空闲沙箱",
+                entity="sandbox",
+            ).warning(exc)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """应用生命周期：启动期装载 / 关闭期释放。
@@ -64,13 +101,33 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     Waiting for application startup 两行属预期残留；`uvicorn app.main:app` 直启时连
     这两行也没有）。
 
-    M2 挂点（A3 §4.3）：启动时装配 `SandboxManager`（会话沙箱注册表 + 空闲 pause
-    计时任务），关闭时对 running 沙箱显式 `pause()` 保留状态（硬约束 8：模板自动
-    休眠不保状态），再停计时任务。当前只做「关闭时释放数据库连接池」。
+    M2 挂点（A3 §4.3）：启动期起 `SandboxManager` 的空闲 pause 清扫循环（事件出口与
+    计费分段回调已在 dependencies 装配期接好，manager 单例直接可用）；`EventPipeline`
+    单例无启停动作，显式取用作为装配锚点（管线故障会在首个 emit 处暴露，不在此处）。
+    e2e 车道（默认零副作用）：`LCODE_E2E_CHECKPOINTER=postgres` 时启动期装配真
+    `AsyncPostgresSaver`（建连 + setup + 注入 dependencies，见 core/postgres_checkpointer），
+    关闭期先于业务池释放其连接池。
+    关闭期**先停清扫循环**再对 running 沙箱显式 `pause()` 保留状态（硬约束 8：模板
+    自动休眠不保状态）——顺序不可调换，防止清扫循环与关停 pause 竞争同一相位机；最后
+    释放数据库连接池。
     """
     _silence_uvicorn_loggers()
-    yield
-    await dispose_engine()
+    manager = get_sandbox_manager()
+    get_event_pipeline()  # 装配锚点：确认事件出口单例就位（无启停动作，见上）
+    set_main_loop(asyncio.get_running_loop())  # 沙箱输出桥的线程→主循环投递目标（_launch）
+    checkpointer_saver = await setup_postgres_checkpointer_if_requested()
+    sweeper = asyncio.create_task(idle_sweeper(manager), name="lcode-sandbox-idle-sweeper")
+    try:
+        yield
+    finally:
+        sweeper.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await sweeper
+        with contextlib.suppress(Exception):
+            manager.shutdown()  # 单会话 pause 失败已在 manager 内记账（crashed），不阻断关停
+        with contextlib.suppress(Exception):
+            await teardown_postgres_checkpointer(checkpointer_saver)
+        await dispose_engine()
 
 
 app = FastAPI(

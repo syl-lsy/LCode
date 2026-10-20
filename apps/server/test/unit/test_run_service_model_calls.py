@@ -1,0 +1,285 @@
+"""unit 层：run 收口 → model_calls 逐次落库（AC-015-1；零库、零网络）。
+
+本文件只测 `RunService._finalize` 的记账编排：假 sink 提供 translator 记账快照，
+monkeypatch 掉短事务落行与 run 行收口，断言**收集到的 ModelCallEntry**。库侧行为
+（行落库/三维汇总）在 integration/test_rest_api.py 覆盖。
+
+锁住的不变量：
+- 一次模型调用一行（translator 记录逐条映射）；
+- role 映射：main / general-purpose → main，explorer/coder/reviewer 同名，未知与 None
+  → main（role 永不为 NULL）；
+- error 路径必定追加恰好一条 error 残差行，全部行 token 之和 == outcome.usage；
+- 正常路径（行集合计 == outcome.usage）不产生多余对账行；
+- 注册表解析失败回退 launch.model 并留 warning，不丢行。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import Any, cast
+
+from loguru import logger
+
+from app.agent.models_registry import ModelRegistry
+from app.agent.runtime import RunOutcome
+from app.events.translator import ModelCallRecord
+from app.services import run_service as run_service_module
+from app.services.cost_service import ModelCallEntry
+from app.services.message_service import RunLaunch
+from app.services.run_service import RunService
+from lcode_contracts.common import Usage
+from lcode_contracts.errors import RunErrorObj
+
+SESSION_ID = "11111111-1111-4111-8111-111111111111"
+RUN_ID = "22222222-2222-4222-8222-222222222222"
+BASE = datetime(2026, 10, 20, 12, 0, 0, tzinfo=UTC)
+
+
+def _launch(model: str = "qwen3.7-plus", effort: str = "high") -> RunLaunch:
+    return RunLaunch(
+        session_id=SESSION_ID,
+        run_id=RUN_ID,
+        content="你好",
+        model=model,
+        reasoning_effort=effort,
+        provider="bailian",
+    )
+
+
+def _record(
+    *,
+    message_id: str = "m1",
+    started_at: datetime = BASE,
+    duration_ms: int = 250,
+    input_tokens: int = 10,
+    output_tokens: int = 5,
+    agent_id: str | None = None,
+    role: str | None = "main",
+) -> ModelCallRecord:
+    return ModelCallRecord(
+        message_id=message_id,
+        started_at=started_at,
+        finished_at=started_at + timedelta(milliseconds=duration_ms),
+        input_tokens=input_tokens,
+        output_tokens=output_tokens,
+        agent_id=agent_id,
+        role=role,
+    )
+
+
+@dataclass
+class _FakeSink:
+    """假 sink：`finish` 只记序，`model_calls` 直出 translator 记账快照。"""
+
+    records: tuple[ModelCallRecord, ...]
+    order: list[str]
+
+    async def finish(
+        self, phase: str, *, error: Any = None, usage_totals: Usage | None = None
+    ) -> None:
+        self.order.append("finish")
+
+    @property
+    def model_calls(self) -> tuple[ModelCallRecord, ...]:
+        return self.records
+
+
+class _BoomRegistry:
+    """解析必失败的注册表替身（验证回退 launch.model 且不丢行）。"""
+
+    def resolve(self, *_args: Any, **_kwargs: Any) -> Any:
+        raise RuntimeError("registry exploded")
+
+
+def _service(registry: Any | None) -> RunService:
+    # _finalize 不触碰 self.db（行/事件各有短事务出口）；零库构造是刻意的
+    return RunService(
+        cast(Any, None),
+        pipeline=cast(Any, None),
+        manager=cast(Any, None),
+        model_registry=registry,
+    )
+
+
+def _collect(monkeypatch: Any, order: list[str]) -> list[ModelCallEntry]:
+    entries: list[ModelCallEntry] = []
+
+    async def _record_entry(entry: ModelCallEntry, **_kwargs: Any) -> None:
+        entries.append(entry)
+        order.append("row")
+
+    async def _close_run_row(_self: Any, _run_id: str, _outcome: RunOutcome) -> None:
+        order.append("run_row")
+
+    monkeypatch.setattr(run_service_module, "record_model_call_short_tx", _record_entry)
+    monkeypatch.setattr(RunService, "_close_run_row", _close_run_row)
+    return entries
+
+
+async def test_finalize_records_one_row_per_model_call(monkeypatch: Any) -> None:
+    """两条 translator 记录 → 两行；字段映射（token/agent/role/model/延迟/created_at）。"""
+    order: list[str] = []
+    entries = _collect(monkeypatch, order)
+    second_started = BASE + timedelta(seconds=1)
+    sink = _FakeSink(
+        records=(
+            # 主智能体记录可能带内层 deepagents 的 execute 命名空间路径 → 落库归一为 None
+            _record(message_id="m1", input_tokens=10, output_tokens=5, agent_id="execute:abc"),
+            _record(
+                message_id="m2",
+                started_at=second_started,
+                duration_ms=400,
+                input_tokens=20,
+                output_tokens=7,
+                agent_id="worker:def",
+                role="explorer",
+            ),
+        ),
+        order=order,
+    )
+
+    outcome = RunOutcome(
+        status="finished",
+        usage=Usage(input_tokens=30, output_tokens=12),
+        error=None,
+        duration_ms=900,
+    )
+    await _service(ModelRegistry.load())._finalize(_launch(), outcome, cast(Any, sink))
+
+    assert len(entries) == 2
+    first, second = entries
+    assert (first.input_tokens, first.output_tokens) == (10, 5)
+    assert (first.role, first.agent_id, first.status) == ("main", None, "success")
+    assert first.model == "qwen3.7-plus"
+    assert first.latency_ms == 250
+    assert first.created_at == BASE
+    assert (second.role, second.agent_id) == ("explorer", "worker:def")
+    assert second.latency_ms == 400
+    assert second.created_at == second_started
+    # 顺序：收口事件 → 逐条成本行 → run 行终态（事件可回放优先）
+    assert order == ["finish", "row", "row", "run_row"]
+
+
+async def test_finalize_maps_general_purpose_to_main(monkeypatch: Any) -> None:
+    """general-purpose 子智能体在成本行归主角色（role 永不为 NULL）。"""
+    order: list[str] = []
+    entries = _collect(monkeypatch, order)
+    sink = _FakeSink(records=(_record(role="general-purpose", agent_id="worker:gp"),), order=order)
+    outcome = RunOutcome(
+        status="finished", usage=Usage(input_tokens=10, output_tokens=5), error=None, duration_ms=1
+    )
+
+    await _service(ModelRegistry.load())._finalize(_launch(), outcome, cast(Any, sink))
+
+    assert len(entries) == 1
+    assert entries[0].role == "main"
+    assert entries[0].agent_id == "worker:gp"  # 子智能体身份保留（role 映射不改归属）
+
+
+async def test_finalize_maps_unknown_and_none_role_to_main(monkeypatch: Any) -> None:
+    """未知角色与 None 都回落 main（DB role 非空口径）。"""
+    order: list[str] = []
+    entries = _collect(monkeypatch, order)
+    sink = _FakeSink(
+        records=(_record(message_id="m1", role="mystery"), _record(message_id="m2", role=None)),
+        order=order,
+    )
+    outcome = RunOutcome(
+        status="finished", usage=Usage(input_tokens=20, output_tokens=10), error=None, duration_ms=1
+    )
+
+    await _service(ModelRegistry.load())._finalize(_launch(), outcome, cast(Any, sink))
+
+    assert [entry.role for entry in entries] == ["main", "main"]
+
+
+async def test_finalize_error_path_adds_single_residual_error_row(monkeypatch: Any) -> None:
+    """error：已完成调用不重复计，残差恰好补一条 error 行；全部行之和 == outcome.usage。"""
+    order: list[str] = []
+    entries = _collect(monkeypatch, order)
+    sink = _FakeSink(
+        records=(
+            _record(message_id="m1", input_tokens=10, output_tokens=5),
+            _record(
+                message_id="m2",
+                input_tokens=20,
+                output_tokens=7,
+                agent_id="worker:def",
+                role="coder",
+            ),
+        ),
+        order=order,
+    )
+    outcome = RunOutcome(
+        status="error",
+        usage=Usage(input_tokens=40, output_tokens=20),
+        error=RunErrorObj(code="model_error", message="模型网关调用失败", retryable=True),
+        duration_ms=500,
+    )
+
+    await _service(ModelRegistry.load())._finalize(_launch(), outcome, cast(Any, sink))
+
+    assert len(entries) == 3
+    error_rows = [entry for entry in entries if entry.status == "error"]
+    assert len(error_rows) == 1
+    residual = error_rows[0]
+    assert (residual.input_tokens, residual.output_tokens) == (10, 8)  # 40-30 / 20-12
+    assert residual.error_type == "model_error"
+    assert residual.latency_ms == 500
+    assert residual.role == "main" and residual.agent_id is None
+    # 守恒：已完成调用（10/5、20/7）+ 残差（10/8）= run 总量（40/20）
+    assert sum(entry.input_tokens for entry in entries) == 40
+    assert sum(entry.output_tokens for entry in entries) == 20
+
+
+async def test_finalize_normal_path_adds_no_reconciliation_row(monkeypatch: Any) -> None:
+    """正常路径：行集合计 == outcome.usage → 不产生多余对账行。"""
+    order: list[str] = []
+    entries = _collect(monkeypatch, order)
+    sink = _FakeSink(
+        records=(
+            _record(message_id="m1", input_tokens=10, output_tokens=5),
+            _record(message_id="m2", input_tokens=20, output_tokens=7, role="reviewer"),
+        ),
+        order=order,
+    )
+    outcome = RunOutcome(
+        status="finished",
+        usage=Usage(input_tokens=30, output_tokens=12),
+        error=None,
+        duration_ms=900,
+    )
+
+    await _service(ModelRegistry.load())._finalize(_launch(), outcome, cast(Any, sink))
+
+    assert len(entries) == 2
+    assert all(entry.status == "success" for entry in entries)
+
+
+async def test_finalize_registry_failure_falls_back_to_launch_model(monkeypatch: Any) -> None:
+    """注册表解析失败：回退 launch.model、留 WARNING，且不丢行。"""
+    order: list[str] = []
+    entries = _collect(monkeypatch, order)
+    sink = _FakeSink(records=(_record(),), order=order)
+    outcome = RunOutcome(
+        status="finished", usage=Usage(input_tokens=10, output_tokens=5), error=None, duration_ms=1
+    )
+
+    captured: list[Any] = []
+    sink_id = logger.add(
+        lambda message: captured.append(message.record), format="{message}", level=0
+    )
+    try:
+        await _service(_BoomRegistry())._finalize(_launch(), outcome, cast(Any, sink))
+    finally:
+        logger.remove(sink_id)
+
+    assert len(entries) == 1
+    assert entries[0].model == "qwen3.7-plus"  # launch.model 回退
+    warnings = [
+        record
+        for record in captured
+        if record["level"].name == "WARNING" and record["extra"].get("entity") == "model"
+    ]
+    assert warnings, "注册表解析失败必须留 WARNING 日志"

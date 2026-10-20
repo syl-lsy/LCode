@@ -12,6 +12,11 @@
   `SANDBOX_` / `SSE_` / `AGENT_` / `LOG_`。
 """
 
+import os
+import re
+from urllib.parse import urlsplit
+
+from pydantic import model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -23,6 +28,25 @@ class BaseSettingsWithEnv(BaseSettings):
     """
 
     model_config = {"env_file": ".env", "extra": "ignore"}
+
+
+# ---------------------------------------------------------------- 环境变量名安全渲染
+
+_UNSAFE_ENV_VAR_NAME = "<非法的环境变量名：疑似填入了密钥本体>"
+"""非法变量名（或误填密钥本体）的固定占位文本——绝不回显原值（NFR-004）。"""
+
+_ENV_VAR_NAME_PATTERN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+"""POSIX 风格环境变量名形态（字母/下划线开头，仅字母数字下划线）。"""
+
+
+def safe_env_var_name(name: str) -> str:
+    """把 `*_API_KEY_ENV` 字段安全地渲染进消息/报告。
+
+    该字段的语义是「环境变量名」，但误填密钥本体时直接插值会把密钥带进
+    生产错误响应与日志（NFR-004）。合法变量名原样返回；其余一律替换为固定
+    占位文本，**不回显原值**。
+    """
+    return name if _ENV_VAR_NAME_PATTERN.fullmatch(name) else _UNSAFE_ENV_VAR_NAME
 
 
 # ---------------------------------------------------------------- 通用（无前缀）
@@ -70,18 +94,57 @@ class DBSettings(BaseSettingsWithEnv):
 # ---------------------------------------------------------------- LLM_
 
 
-class LLMSettings(BaseSettingsWithEnv):
-    """模型网关配置（`LLM_` 前缀）：OpenAI 兼容网关口径（AGENTS.md 技术栈冻结）。
+def _current_environment() -> str:
+    """当前部署环境标识：进程环境变量优先；未 export 时按 CommonSettings 同口径读 .env。"""
+    return os.environ.get("ENVIRONMENT") or CommonSettings().environment
 
-    骨架阶段 `base_url` 允许为空（不阻塞无 LLM 的冒烟验证）；M2 的
+
+class LLMSettings(BaseSettingsWithEnv):
+    """模型网关配置（`LLM_` 前缀）：Anthropic Messages 兼容网关口径（ADR-007）。
+
+    `base_url` 必须是 Anthropic Messages 兼容端点（`/v1/messages`）；OpenAI-only
+    网关不支持。骨架阶段 `base_url` 允许为空（不阻塞无 LLM 的冒烟验证）；M2 的
     `get_llm(role)` 工厂在首次取用时 fail-fast 校验缺失（A3 §3.1）。
+
+    C7 scheme 校验（M2 收口）：非空 `base_url` 只接受 http/https；`ENVIRONMENT=production`
+    时强制 https（http 拒绝）；ftp/file/data/无 scheme 一律拒绝。空串 = 未配置，放行。
+    错误信息只点名字段与允许的 scheme——**不回显 URL**（pydantic 默认会在
+    ValidationError 里附 `input_value`，故开启 `hide_input_in_errors`，避免 userinfo
+    中的密码随异常/日志泄漏）。
     """
 
-    base_url: str = ""  # LLM_BASE_URL：网关地址（百炼兼容模式端点）
+    # ENVIRONMENT 属通用组：这里不新增字段（避免 LLM_ENVIRONMENT 假变量进模板），
+    # 校验时按 CommonSettings 同口径读取（进程环境变量优先，否则读 .env）。
+    base_url: str = ""  # LLM_BASE_URL：Anthropic Messages 兼容网关地址（/v1/messages 端点）
     api_key_env: str = "DASHSCOPE_API_KEY"  # LLM_API_KEY_ENV：密钥的**环境变量名**，非密钥本体
     request_timeout_s: int = 300  # LLM_REQUEST_TIMEOUT_S（NFR-005）
     max_retries: int = 2  # LLM_MAX_RETRIES
-    model_config = {"env_prefix": "LLM_"}
+    model_config = {"env_prefix": "LLM_", "hide_input_in_errors": True}
+
+    @model_validator(mode="after")
+    def _validate_base_url_scheme(self) -> LLMSettings:
+        """C7：空串放行；非空仅 http/https；production 仅 https。
+
+        报错文案刻意不引用 `base_url` 本体（含 userinfo 时可能带密码），只写字段名
+        与允许的 scheme；`hide_input_in_errors` 保证 ValidationError 也不回显输入值。
+        """
+        base_url = self.base_url.strip()
+        if not base_url:
+            self.base_url = ""
+            return self
+
+        scheme = urlsplit(base_url).scheme.lower()
+        if scheme not in ("http", "https"):
+            raise ValueError(
+                "LLM_BASE_URL 的 scheme 非法：仅允许 http/https（非空值必须显式带 scheme）"
+            )
+        if _current_environment().strip().lower() == "production" and scheme != "https":
+            raise ValueError(
+                "LLM_BASE_URL 在 ENVIRONMENT=production 时必须使用 https（仅允许 http/https，"
+                "生产仅 https）"
+            )
+        self.base_url = base_url
+        return self
 
 
 # ---------------------------------------------------------------- SANDBOX_
@@ -102,12 +165,21 @@ class SandboxSettings(BaseSettingsWithEnv):
     # 百炼（E2B 协议；e2b==2.31.0 钉死，理由见 pyproject.toml 注释）
     bailian_api_key_env: str = "BAILIAN_API_KEY"  # SANDBOX_BAILIAN_API_KEY_ENV：密钥的环境变量名
     bailian_template: str = ""  # SANDBOX_BAILIAN_TEMPLATE：镜像模板（M2 spike 定，U5）
-    bailian_domain: str = ""  # SANDBOX_BAILIAN_DOMAIN：E2B 协议域名（M2 spike 定）
+    # SANDBOX_BAILIAN_API_URL：百炼 E2B 接入**完整地址**，形态
+    # `https://{workspace_id}.{region}.maas.aliyuncs.com/api/v1/agentstudio/sandbox`
+    # （region 当前仅 cn-beijing）；不要传 e2b 的 `domain`（会被拼成 https://api.<domain>）
+    bailian_api_url: str = ""
+    # SANDBOX_BAILIAN_ALIYUN_UID：仅用于拼 `e2b_<uid>` 形态的 api_key（满足 e2b 格式校验），
+    # 百炼不拿它做业务鉴权——真实鉴权是 Authorization: Bearer <BAILIAN_API_KEY>
+    bailian_aliyun_uid: str = ""
 
     # OpenSandbox（自托管备选；自有协议，非 E2B 兼容——AGENTS.md 硬约束 12）
     opensandbox_endpoint: str = ""  # SANDBOX_OPENSANDBOX_ENDPOINT：按实际部署端口填写
     opensandbox_api_key_env: str = "OPENSANDBOX_API_KEY"  # SANDBOX_OPENSANDBOX_API_KEY_ENV
     opensandbox_backend: str = "docker"  # SANDBOX_OPENSANDBOX_BACKEND: docker | k8s | firecracker
+    # SANDBOX_OPENSANDBOX_IMAGE：SDK 要求 image 或 snapshot_id（本适配器不支持 snapshot）；
+    # 留空 = 未配置，create 时 fail-fast；不内置默认镜像
+    opensandbox_image: str = ""
     model_config = {"env_prefix": "SANDBOX_"}
 
 

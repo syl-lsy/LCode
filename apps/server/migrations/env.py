@@ -26,9 +26,13 @@ from app.models import Base
 # Alembic Config 对象：提供当前 ini 文件里的配置项
 config = context.config
 
-# 日志配置来自 alembic.ini（[loggers] 等段）
+# 日志配置来自 alembic.ini（[loggers] 等段）。
+# `disable_existing_loggers=False` 不可省：进程内调用 alembic（如 integration 层
+# conftest 在 pytest_sessionstart 里 `command.upgrade`）时，默认的 True 会**禁用所有
+# 既有 logger**——应用 stdlib 日志（异常处理器兜底路径）与本会话后续用例的 caplog
+# 捕获会被静默掐断，且症状只在「unit+integration 同进程跑」时出现（难查）。
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # autogenerate 的元数据来源：ORM 基类聚合的 metadata（M2 起逐表填充）
 target_metadata = Base.metadata

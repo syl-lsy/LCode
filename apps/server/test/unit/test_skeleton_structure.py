@@ -59,8 +59,13 @@ def test_models_package_reexports_the_same_base():
 
 
 def test_api_v1_router_prefix_matches_contract():
-    """`/api/v1` 前缀与契约 rest.py 的 ENDPOINTS 一致（ADR-004 偏差 8）。"""
+    """`/api/v1` 前缀与契约 rest.py 的 ENDPOINTS 一致（ADR-004 偏差 8）。
+
+    M2 填肉后按任务逐个挂载：已挂端点必须落在契约 ENDPOINTS 声明的路径上
+    （当前已挂：任务 3 的 GET /models；后续任务逐个追加断言）。
+    """
     from app.api.v1 import api_router
 
     assert api_router.prefix == "/api/v1"
-    assert api_router.routes == []  # 骨架期无端点：M2 才 include_router
+    paths = {getattr(route, "path", None) for route in api_router.routes}
+    assert "/api/v1/models" in paths  # M2 任务 3 已挂载
