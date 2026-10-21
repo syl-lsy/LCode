@@ -9,14 +9,21 @@
   - `test_bailian_non_git_input_baseline`（AC-002-5 真沙箱版）
 - `requires_sandbox_opensandbox`（自托管 OpenSandbox，可延后至实际切备选，U4）：
   - `test_opensandbox_smoke`
+- 配置面（无凭证、无远端调用，任何环境都跑）：
+  - `test_bailian_missing_key_raises_configuration_error_without_remote_call`
+  - `test_bailian_configuration_error_message_contains_no_key_value`
 
 skip 策略：conftest 不感知沙箱凭证（test/integration/conftest.py 只管 DB），因此每个
-用例开头调 `*_ready()`，不满足就 `pytest.skip(reason)`——reason 里点名缺的**配置项或
-环境变量名**（绝不回显密钥值，NFR-004）。标记本身只用于 `-m` 过滤与 CI 报表。
+真沙箱用例开头调 `*_ready()`，不满足就 `pytest.skip(reason)`——reason 里点名缺的**配置
+项或环境变量名**（绝不回显密钥值，NFR-004）。标记本身只用于 `-m` 过滤与 CI 报表。
+配置面用例不调 `*_ready()`、也不打真沙箱标记：它们只验证校验顺序与消息面，显式构造
+配置（`_CONFIG_ONLY_API_URL` 假地址）以不依赖本地 `.env` 的 URL / 凭证（CI 无 `.env`）。
 
-注意（M2 出口口径，test-plan §1.4）：真百炼冒烟**至少人工跑通 1 轮并留痕**——本机当前
-未配置 `BAILIAN_API_KEY`，所以这里的用例在本环境全部显式 skip；`scripts/spike_bailian_
-sandbox.py` 是同一套探针的独立入口（Q7 spike）。
+注意（M2 出口口径，test-plan §1.4）：真百炼冒烟**至少人工跑通 1 轮并留痕**——CI 无
+凭证（`.env.test` 由 `.env.test.example` 生成，`SANDBOX_BAILIAN_API_URL` 为空）时这些
+用例显式 skip；要在本机真跑，需在 `.env.test` 配好 `BAILIAN_API_KEY` /
+`SANDBOX_BAILIAN_API_URL` / `SANDBOX_BAILIAN_TEMPLATE`。`scripts/spike_bailian_sandbox.py`
+是同一套探针的独立入口（Q7 spike）。
 """
 
 from __future__ import annotations
@@ -35,6 +42,13 @@ from app.sandbox.base import (
     probe_required,
 )
 from app.sandbox.opensandbox import OpenSandboxSandbox
+
+_CONFIG_ONLY_API_URL = "https://example.invalid/api/v1"
+"""配置面用例的假 `bailian_api_url`：只为越过/触发 URL fail-fast，绝不发起网络请求。
+
+`.invalid` 是 RFC 2606 保留 TLD（永不解析），即使被测代码误发请求也会立刻失败而非打到
+真实端点；同时避免用例隐式依赖本地 `.env` 的 `SANDBOX_BAILIAN_API_URL`（CI 为空）。
+"""
 
 # --------------------------------------------------------------------------- 就绪判定
 
@@ -161,20 +175,27 @@ def test_bailian_non_git_input_baseline(bailian_sandbox: LcodeSandbox) -> None:
     assert "lcode-baseline/round-0" in verify.output
 
 
-@pytest.mark.requires_sandbox
-def test_bailian_missing_key_skips_cleanly_without_key(
+def test_bailian_missing_key_raises_configuration_error_without_remote_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """缺凭证的报错面：SandboxConfigurationError 只含变量名（NFR-004，直接断言不连远端）。"""
+    """缺凭证的报错面：SandboxConfigurationError 只含变量名（NFR-004，配置面用例不连远端）。
+
+    显式给出 `bailian_api_url`（假地址）以越过 URL fail-fast，让断言落在凭证校验上；
+    不读全局 `sandbox_settings` 的 URL，避免隐式依赖本地 `.env`（CI 无 `.env`、URL 为空）。
+    """
     from app.sandbox.base import SandboxConfigurationError as ConfigError
 
     monkeypatch.delenv(sandbox_settings.bailian_api_key_env, raising=False)
-    client = BailianSandbox(settings=sandbox_settings)
+    config_only = SandboxSettings(
+        bailian_api_key_env=sandbox_settings.bailian_api_key_env,
+        bailian_api_url=_CONFIG_ONLY_API_URL,
+    )
+    client = BailianSandbox(settings=config_only)
 
     with pytest.raises(ConfigError) as excinfo:
         client.create()
 
-    assert sandbox_settings.bailian_api_key_env in str(excinfo.value)
+    assert config_only.bailian_api_key_env in str(excinfo.value)
 
 
 # --------------------------------------------------------------------- OpenSandbox 冒烟
@@ -211,7 +232,10 @@ def test_bailian_configuration_error_message_contains_no_key_value(
 ) -> None:
     """缺凭证错误只点名变量名（NFR-004）：无凭证配置下直接断言，不连远端（永远跑）。"""
     monkeypatch.delenv("LANE_NEVER_SET_KEY_ENV", raising=False)
-    empty_cfg = SandboxSettings(bailian_api_key_env="LANE_NEVER_SET_KEY_ENV")
+    empty_cfg = SandboxSettings(
+        bailian_api_key_env="LANE_NEVER_SET_KEY_ENV",
+        bailian_api_url=_CONFIG_ONLY_API_URL,
+    )
     client = BailianSandbox(settings=empty_cfg)
 
     with pytest.raises(SandboxConfigurationError) as excinfo:
