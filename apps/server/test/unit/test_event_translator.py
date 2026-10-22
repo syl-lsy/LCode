@@ -30,12 +30,13 @@ from typing import Any
 
 import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
-from pydantic import TypeAdapter
+from langgraph.types import Interrupt
+from pydantic import TypeAdapter, ValidationError
 
-from app.events.translator import EventTranslator
+from app.events.translator import EventTranslator, InFlightToolCall, InterruptMappingError
 from lcode_contracts.common import Usage
 from lcode_contracts.errors import RunErrorObj
-from lcode_contracts.events import P0_EVENT_TYPES, Event
+from lcode_contracts.events import P0_EVENT_TYPES, Event, RunStatusEvent
 
 _UTC = UTC
 SESSION_ID = "3f1c9a52-6f77-4a0f-9a1e-7b2c4d5e6f70"
@@ -993,6 +994,63 @@ def test_custom_passthrough_fills_envelope_for_compact_status() -> None:
     _assert_contract(events)
 
 
+def test_custom_compact_started_and_finished_pair_roundtrips_as_contract_events() -> None:
+    """tap 的 compact 载荷（started / finished+CompactInfo）经 custom 通道转契约事件。
+
+    M3 Phase 5 的 wire 侧锚：中间件不新增事件类型，translator 补信封后必须逐条过
+    `RunStatusEvent` 校验（含 finished 必须带 compact 的 validator）。
+    """
+    tr = _translator()
+    started = _translated(
+        tr, ("custom", {"type": "run_status", "subject": "compact", "phase": "started"})
+    )
+    finished = _translated(
+        tr,
+        (
+            "custom",
+            {
+                "type": "run_status",
+                "subject": "compact",
+                "phase": "finished",
+                "compact": {"before_tokens": 120000, "after_tokens": 40000},
+            },
+        ),
+    )
+
+    assert [event.type for event in (*started, *finished)] == ["run_status", "run_status"]
+    assert [event.phase for event in (*started, *finished)] == ["started", "finished"]
+    assert started[0].subject == "compact" and started[0].compact is None
+    assert finished[0].compact is not None
+    assert finished[0].compact.before_tokens == 120000
+    assert finished[0].compact.after_tokens == 40000
+    _assert_contract([*started, *finished])
+
+
+def test_compact_subject_rejects_stopped_and_bare_finished() -> None:
+    """契约反向锁定（AC-010-1）：subject=compact 无 stopped，finished 必带 compact。
+
+    translator 的 custom 透传走构造期校验（fail loudly）——这里锁住失败面，防止
+    上游误发被静默吞掉。
+    """
+    envelope: dict[str, Any] = {
+        "seq": 0,
+        "session_id": SESSION_ID,
+        "run_id": RUN_ID,
+        "created_at": datetime(2026, 10, 17, 12, 0, 0, tzinfo=_UTC),
+    }
+    with pytest.raises(ValidationError):
+        RunStatusEvent(subject="compact", phase="stopped", **envelope)
+    with pytest.raises(ValidationError):
+        # finished 必须带 compact（前后窗口占用）
+        RunStatusEvent(subject="compact", phase="finished", **envelope)
+
+    tr = _translator()
+    with pytest.raises(ValidationError):
+        _translated(
+            tr, ("custom", {"type": "run_status", "subject": "compact", "phase": "stopped"})
+        )
+
+
 def test_custom_payload_without_contract_type_is_ignored() -> None:
     tr = _translator()
     assert _translated(tr, ("custom", {"note": "framework chatter"})) == []
@@ -1340,11 +1398,334 @@ def test_custom_structured_result_attaches_to_message_finished() -> None:
     assert finished.structured.data is None
 
 
-def test_interrupt_payload_is_ignored_in_m0_scope() -> None:
-    """审批族属 M3（A3 §10）：P0 翻译器不产 approval_request，遇到 interrupt 载荷安静跳过。"""
+def test_interrupt_payload_produces_no_domain_event() -> None:
+    """审批族（M3）：`translate` 不构造 approval_request（approval_id 由服务层传入）。
+
+    映射走独立入口 `describe_interrupt`（下一组用例）；本用例锁「翻译器不在没有
+    审批行 id 的情况下凭空造事件」——事件与已提交审批行必须一一对应。
+    """
     tr = _translator()
-    marker = object()
-    assert _translated(tr, ("updates", {"__interrupt__": (marker,)})) == []
+    payload = {"__interrupt__": (Interrupt({"action_requests": []}, id="int-1"),)}
+    assert _translated(tr, ("updates", payload)) == []
+
+
+# ---------------------------------------------------------------- 审批对位（M3）
+
+
+def _ai_with_calls(*calls: tuple[str, str, dict[str, Any]], message_id: str = "ai-1") -> AIMessage:
+    """构造一条带 tool_calls 的聚合 AIMessage（updates 通道的模型节点更新形态）。"""
+    return AIMessage(
+        content="",
+        id=message_id,
+        tool_calls=[
+            {"name": name, "args": args, "id": call_id, "type": "tool_call"}
+            for call_id, name, args in calls
+        ],
+    )
+
+
+def _interrupt(
+    *action_requests: tuple[str, dict[str, Any]], interrupt_id: str = "int-1"
+) -> Interrupt:
+    return Interrupt(
+        {
+            "action_requests": [{"name": name, "args": args} for name, args in action_requests],
+            "review_configs": [],
+        },
+        id=interrupt_id,
+    )
+
+
+def _open_call(
+    tr: EventTranslator,
+    call_id: str,
+    name: str,
+    args: dict[str, Any],
+    *,
+    message_id: str = "ai-1",
+) -> None:
+    """发一条模型节点更新，让 translator 为该调用登记在飞锚（started 已发出）。"""
+    _translated(
+        tr,
+        _updates(
+            "model",
+            {"messages": [_ai_with_calls((call_id, name, args), message_id=message_id)]},
+        ),
+    )
+
+
+def _describe(tr: EventTranslator, interrupt: Interrupt, *, namespace: tuple[str, ...] = ()) -> Any:
+    return tr.describe_interrupt(namespace, interrupt)
+
+
+def test_describe_interrupt_maps_action_requests_to_tool_call_ids() -> None:
+    """成功对位：action_requests 按序映射到在飞 tool calls（(name,args) 精确匹配）。"""
+    tr = _translator(
+        risk_level_for=lambda tool, args: "high" if tool == "execute" else None,
+        approval_reason=lambda tool, args: f"规则命中：{tool}",
+    )
+    _open_call(tr, "call-1", "execute", {"command": "rm -rf /"})
+
+    targets = _describe(tr, _interrupt(("execute", {"command": "rm -rf /"})))
+
+    assert len(targets) == 1
+    target = targets[0]
+    assert target.tool_call_id == "call-1"
+    assert target.tool == "execute"
+    assert target.args == {"command": "rm -rf /"}
+    assert target.risk_level == "high"
+    assert target.reason == "规则命中：execute"
+    assert target.source_message_id == "ai-1"
+
+
+def test_describe_interrupt_orders_duplicate_calls_by_appearance() -> None:
+    """同名同参的重复调用按出现序一一配对（游标只前进，不重复消费）。"""
+    tr = _translator()
+    _open_call(tr, "call-1", "write_file", {"file_path": "/a", "content": "x"})
+    _open_call(tr, "call-2", "write_file", {"file_path": "/a", "content": "x"})
+
+    targets = _describe(
+        tr,
+        _interrupt(
+            ("write_file", {"file_path": "/a", "content": "x"}),
+            ("write_file", {"file_path": "/a", "content": "x"}),
+        ),
+    )
+    assert [target.tool_call_id for target in targets] == ["call-1", "call-2"]
+
+
+def test_describe_interrupt_tolerates_half_open_task_call() -> None:
+    """父图 task 半开（started 已发、ToolMessage 等 resume 后才有）不影响对位。"""
+    tr = _translator()
+    _open_call(tr, "call-task", "task", {"description": "派 coder", "subagent_type": "coder"})
+    _open_call(tr, "call-exec", "execute", {"command": "echo hi"})
+
+    targets = _describe(tr, _interrupt(("execute", {"command": "echo hi"})))
+    assert [target.tool_call_id for target in targets] == ["call-exec"]
+
+
+def test_describe_interrupt_fails_closed_on_count_mismatch() -> None:
+    """数量不符（action_requests 多于在飞匹配）→ InterruptMappingError（不自动放行）。"""
+    tr = _translator()
+    _open_call(tr, "call-1", "execute", {"command": "echo one"})
+
+    with pytest.raises(InterruptMappingError, match="无法对位"):
+        _describe(
+            tr,
+            _interrupt(
+                ("execute", {"command": "echo one"}),
+                ("execute", {"command": "echo two"}),
+            ),
+        )
+
+
+def test_describe_interrupt_fails_closed_on_name_mismatch() -> None:
+    """名称/参数对不上 → 抛错（run 以 error 收敛）；绝不按位置硬配。"""
+    tr = _translator()
+    _open_call(tr, "call-1", "execute", {"command": "echo one"})
+
+    with pytest.raises(InterruptMappingError):
+        _describe(tr, _interrupt(("write_file", {"file_path": "/a"})))
+
+
+def test_describe_interrupt_rejects_malformed_payload() -> None:
+    """载荷结构畸形（缺 action_requests / 非对象）→ fail-closed。"""
+    tr = _translator()
+    with pytest.raises(InterruptMappingError):
+        _describe(tr, Interrupt({"review_configs": []}, id="int-1"))
+
+    _open_call(tr, "call-1", "execute", {"command": "echo"})
+    with pytest.raises(InterruptMappingError):
+        _describe(tr, Interrupt({"action_requests": ["not-an-object"]}, id="int-2"))
+
+
+def test_describe_interrupt_ignores_subgraph_duplicate_namespace() -> None:
+    """子图重复条目（namespace 非空）返回 []——根层 () 是唯一映射入口（spike §1.3）。"""
+    tr = _translator()
+    _open_call(tr, "call-1", "execute", {"command": "echo one"})
+    interrupt = _interrupt(("execute", {"command": "echo one"}))
+
+    assert _describe(tr, interrupt, namespace=("tools:task-1",)) == []
+    assert [t.tool_call_id for t in _describe(tr, interrupt)] == ["call-1"]
+
+
+def test_approval_request_event_carries_contract_fields() -> None:
+    """approval_request 事件：approval_id 由服务层传入，风险/理由来自注入解析器。"""
+    clock = _Clock()
+    tr = _translator(
+        clock,
+        risk_level_for=lambda tool, args: "medium",
+        approval_reason=lambda tool, args: "文件写入：命中文件写审批规则（write_file）",
+    )
+    _open_call(tr, "call-1", "write_file", {"file_path": "/a", "content": "x"})
+    target = _describe(tr, _interrupt(("write_file", {"file_path": "/a", "content": "x"})))[0]
+
+    event = tr.approval_request_event("approval-uuid", target)
+
+    assert event.type == "approval_request"
+    assert event.approval_id == "approval-uuid"
+    assert event.tool_call_id == "call-1"
+    assert event.tool == "write_file"
+    assert event.args == {"file_path": "/a", "content": "x"}
+    assert event.risk_level == "medium"
+    assert event.reason == "文件写入：命中文件写审批规则（write_file）"
+    assert event.session_id == SESSION_ID and event.run_id == RUN_ID
+    assert event.seq == 0  # 真实 seq 由 EventPipeline 分配
+    _assert_contract([event])
+
+
+def test_unknown_tool_in_interrupt_defaults_to_medium_risk() -> None:
+    """未知工具出现在审批面时按 medium 兜底（不丢字段、不降级成 None）。"""
+    tr = _translator()  # 未注入解析器
+    _open_call(tr, "call-1", "custom_tool", {"x": 1})
+    target = _describe(tr, _interrupt(("custom_tool", {"x": 1})))[0]
+    assert target.risk_level == "medium"
+    assert target.reason is None
+
+
+# ---------------------------------------------------------------- resume 播种（M3）
+
+
+def test_resumed_tool_call_ids_suppress_duplicate_started() -> None:
+    """resume 播种：已 started 的挂起调用在续跑段不重发 started（tap/updates 双源）。"""
+    tr = _translator(resumed_tool_call_ids=["call-1"], resumed_message_ids=["ai-1"])
+
+    events = _translated(
+        tr,
+        _updates("model", {"messages": [_ai_with_calls(("call-1", "execute", {"command": "x"}))]}),
+    )
+    assert events == []
+
+    # 新调用照常发 started（播种不影响本段的新调用）
+    fresh = _translated(
+        tr,
+        _updates(
+            "model",
+            {
+                "messages": [
+                    _ai_with_calls(("call-2", "execute", {"command": "y"}), message_id="ai-2")
+                ]
+            },
+        ),
+    )
+    assert [e.type for e in fresh] == ["tool_call_started"]
+    assert fresh[0].tool_call_id == "call-2"
+
+
+def test_resumed_closed_tool_call_ids_suppress_history_replay() -> None:
+    """resume 播种（历史重放）：已收口调用不重发 started/finished（同 run 不重复工具卡）。
+
+    审批恢复时图从 checkpoint 续跑，execute 节点会把**整段历史**再发一遍——只播种在飞
+    调用时，历史里已完成调用会二次公告。`resumed_closed_tool_call_ids` 同时写入 started
+    与 finished 两道去重锚。
+    """
+    tr = _translator(resumed_closed_tool_call_ids=["call-done"], resumed_message_ids=["ai-old"])
+    assert "call-done" in tr.closed_tool_call_ids
+
+    # 历史 AIMessage 重放：已完成调用不重发 started
+    replayed_ai = _translated(
+        tr,
+        _updates(
+            "model",
+            {
+                "messages": [
+                    _ai_with_calls(("call-done", "execute", {"command": "x"}), message_id="ai-old")
+                ]
+            },
+        ),
+    )
+    assert replayed_ai == []
+
+    # 历史 ToolMessage 重放：不重发 finished
+    replayed_tool = _translated(
+        tr,
+        ("messages", (ToolMessage(content="done", tool_call_id="call-done", name="execute"), {})),
+    )
+    assert replayed_tool == []
+
+    # 本段新调用照常公告，并在收口后进入 closed 快照（供下一次挂起播种）
+    fresh = _translated(
+        tr,
+        _updates(
+            "model",
+            {
+                "messages": [
+                    _ai_with_calls(("call-fresh", "execute", {"command": "y"}), message_id="ai-new")
+                ]
+            },
+        ),
+    )
+    assert [e.type for e in fresh] == ["tool_call_started"]
+    fresh_finished = _translated(
+        tr,
+        ("messages", (ToolMessage(content="ok", tool_call_id="call-fresh", name="execute"), {})),
+    )
+    assert [e.type for e in fresh_finished] == ["tool_call_finished"]
+    assert "call-fresh" in tr.closed_tool_call_ids
+    assert "call-fresh" not in {call.tool_call_id for call in tr.open_tool_calls}
+
+
+def test_resumed_message_ids_suppress_duplicate_finish_and_model_call() -> None:
+    """resume 播种：after_model 重发的挂起回合消息不重复收口/记账（防成本双计）。"""
+    tr = _translator(resumed_message_ids=["ai-1"])
+
+    events = _translated(
+        tr,
+        _updates(
+            "after_model",
+            {
+                "messages": [
+                    AIMessage(
+                        content="",
+                        id="ai-1",
+                        usage_metadata={"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                    )
+                ]
+            },
+        ),
+    )
+    assert events == []
+    assert tr.model_calls == ()
+    assert tr.usage_totals == Usage()
+
+
+def test_resumed_tool_calls_restore_task_stack_for_role_attribution() -> None:
+    """富播种：task 调用重建 task 栈——子智能体事件仍归 coder（不是 main）。"""
+    task_call = InFlightToolCall(
+        tool_call_id="call-task",
+        tool="task",
+        args={"description": "派 coder", "subagent_type": "coder"},
+        source_message_id="ai-task",
+    )
+    tr = _translator(resumed_tool_calls=[task_call], resumed_message_ids=["ai-task"])
+
+    events = _translated(
+        tr,
+        (
+            ("execute:x", "tools:y"),
+            "messages",
+            (
+                AIMessageChunk(content="coder 在说话", id="coder-1"),
+                {"checkpoint_ns": "execute:x|tools:y"},
+            ),
+        ),
+    )
+
+    assert [event.type for event in events] == ["message_delta"]
+    agent = events[0].agent
+    assert agent is not None
+    assert agent.role == "coder"
+    assert agent.spawned_by_tool_call_id == "call-task"
+    assert agent.agent_id == "execute:x|tools:y"
+
+
+def test_open_tool_calls_and_handled_message_ids_expose_seed_state() -> None:
+    """播种面自省：open_tool_calls 保序、handled_message_ids 含种子与已收口消息。"""
+    task_call = InFlightToolCall("call-task", "task", {"subagent_type": "coder"})
+    tr = _translator(resumed_tool_calls=[task_call], resumed_message_ids=["ai-task"])
+    assert [call.tool_call_id for call in tr.open_tool_calls] == ["call-task"]
+    assert tr.open_tool_calls[0].tool == "task"
+    assert tr.handled_message_ids == ("ai-task",)
 
 
 def test_three_tuple_namespace_form_is_supported() -> None:

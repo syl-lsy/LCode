@@ -8,12 +8,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ApiError } from './http';
+import { decideApproval, getApproval, listApprovals } from './approvals';
 import { getCostSummary, getSessionCost } from './costs';
 import { listMessages, sendMessage, stopRun } from './messages';
 import { listModels } from './models';
 import { getSandboxStatus } from './sandbox';
 import { createSession, deleteSession, getSession, listSessions, patchSession } from './sessions';
 
+import approvalItemAuto from '@contracts-fixtures/rest/valid/approval_item_auto.json';
 import costSummaryFixture from '@contracts-fixtures/rest/valid/cost_summary.json';
 import messageSendAck from '@contracts-fixtures/rest/valid/message_send_ack.json';
 import sessionDetail from '@contracts-fixtures/rest/valid/session_detail.json';
@@ -136,6 +138,66 @@ describe('messages.ts 端点面', () => {
     const ack = await stopRun('run-1');
     expect(spy.calls[0]).toMatchObject({ url: '/api/v1/runs/run-1/stop', init: { method: 'POST' } });
     expect(ack).toEqual({ run_id: 'run-1', status: 'stopped' });
+    spy.restore();
+  });
+});
+
+describe('approvals.ts 端点面（M3 Phase 2）', () => {
+  it('listApprovals：GET /approvals（status/session_id 查询串透传；恢复挂起用）', async () => {
+    const spy = install(() => errorEnvelope());
+
+    await listApprovals().catch(() => undefined);
+    expect(spy.calls[0]?.url).toBe('/api/v1/approvals');
+
+    await listApprovals({ status: 'pending', sessionId: 'sess-a' }).catch(() => undefined);
+    expect(spy.calls[1]?.url).toBe('/api/v1/approvals?status=pending&session_id=sess-a');
+    spy.restore();
+  });
+
+  it('getApproval：GET /approvals/{id}（id 编码；404 APPROVAL_NOT_FOUND 经 ApiError 透传）', async () => {
+    const spy = install(() =>
+      new Response(JSON.stringify({ code: 'APPROVAL_NOT_FOUND', message: '审批不存在' }), {
+        status: 404,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+
+    const err = await getApproval('aprv x').catch((e: unknown) => e);
+    expect(spy.calls[0]?.url).toBe(`/api/v1/approvals/${encodeURIComponent('aprv x')}`);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).code).toBe('APPROVAL_NOT_FOUND');
+    spy.restore();
+  });
+
+  it('decideApproval：POST /approvals/{id}/decide（四决策体透传 + ApprovalDecisionAck 解包）', async () => {
+    const spy = install(() => okEnvelope({ approval: approvalItemAuto, run_id: 'run-1' }));
+
+    const ack = await decideApproval('aprv-auto', { decision: 'approve', scope: 'once' });
+    expect(spy.calls[0]).toMatchObject({
+      url: '/api/v1/approvals/aprv-auto/decide',
+      init: { method: 'POST' },
+    });
+    expect(spy.calls[0]?.init.body).toBe(JSON.stringify({ decision: 'approve', scope: 'once' }));
+    expect(ack.approval.status).toBe('auto_approved');
+    expect(ack.run_id).toBe('run-1');
+    spy.restore();
+
+    // edit 决策体：edited_args 原样序列化
+    const spy2 = install(() => errorEnvelope());
+    const edited = { command: 'rm -rf dist/', timeout: 120 };
+    await decideApproval('aprv-1', { decision: 'edit', edited_args: edited }).catch(() => undefined);
+    expect(spy2.calls[0]?.init.body).toBe(
+      JSON.stringify({ decision: 'edit', edited_args: edited }),
+    );
+    spy2.restore();
+  });
+
+  it('listApprovals 成功路径：ApprovalPage 走契约 schema 解包（fixture 同源）', async () => {
+    const spy = install(() => okEnvelope({ items: [approvalItemAuto] }));
+
+    const page = await listApprovals({ status: 'auto_approved' });
+    expect(page.items).toEqual([approvalItemAuto]);
+    expect(page.items[0]?.status).toBe('auto_approved'); // AC-013-3 审计面恢复
     spy.restore();
   });
 });

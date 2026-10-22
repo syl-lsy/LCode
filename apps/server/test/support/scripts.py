@@ -56,6 +56,116 @@ EXEC_STREAM_LINES = ("lcode-stream-line-1\n", "lcode-stream-line-2\n")
 EXEC_FAIL_COMMAND = "probe lcode-fail-sandbox"
 """沙箱命令：命中假沙箱的 SandboxUnavailable 剧本（AC-004-4 / AC-002-4）。"""
 
+# ---- M3 审批场景：execute 门控与子智能体审批 -------------------------------------
+
+APPROVAL_COMMAND = "echo lcode-approval"
+"""审批命令：`echo` 不在只读白名单 → 恒触发 interrupt（AC-013-2）。"""
+
+APPROVAL_TOOL_CALL_ID = "call-approval-exec"
+APPROVAL_REPLY_TEXT = "审批流程结束。"
+
+APPROVAL_BATCH_COMMANDS = (APPROVAL_COMMAND, "echo lcode-approval-2")
+APPROVAL_BATCH_TOOL_CALL_IDS = ("call-approval-exec-1", "call-approval-exec-2")
+"""并发批次：同一 model turn 两个 execute 调用 → 同一个 interrupt 里两条 action_request。"""
+
+SUBAGENT_TASK_CALL_ID = "call-approval-task"
+SUBAGENT_EXECUTE_CALL_ID = "call-approval-coder-exec"
+SUBAGENT_REPLY_TEXT = "子智能体已完成任务。"
+
+
+def approval_execute() -> list[AIMessage]:
+    """审批主链：execute（触发审批）→ 批准后收口（两段各带 usage，锁跨段合计）。"""
+    return [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "execute",
+                    "args": {"command": APPROVAL_COMMAND},
+                    "id": APPROVAL_TOOL_CALL_ID,
+                    "type": "tool_call",
+                }
+            ],
+            usage_metadata=usage_of(input_tokens=10, output_tokens=5),
+        ),
+        AIMessage(
+            content=APPROVAL_REPLY_TEXT,
+            usage_metadata=usage_of(input_tokens=20, output_tokens=8),
+        ),
+    ]
+
+
+def approval_execute_batch() -> list[AIMessage]:
+    """并发审批批次：同一 turn 两个 execute 调用（一个 interrupt 两条 action_request）。
+
+    用于「同一批多个审批并发决策」用例：两条 pending 行同 run、同批次。
+    """
+    return [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "execute",
+                    "args": {"command": command},
+                    "id": tool_call_id,
+                    "type": "tool_call",
+                }
+                for command, tool_call_id in zip(
+                    APPROVAL_BATCH_COMMANDS, APPROVAL_BATCH_TOOL_CALL_IDS, strict=True
+                )
+            ],
+            usage_metadata=usage_of(input_tokens=10, output_tokens=5),
+        ),
+        AIMessage(
+            content=APPROVAL_REPLY_TEXT,
+            usage_metadata=usage_of(input_tokens=20, output_tokens=8),
+        ),
+    ]
+
+
+def subagent_task_then_reply() -> list[AIMessage]:
+    """主智能体：task 派 coder（MANUAL 下先审 task）→ 批准并等 coder 收口后回答。"""
+    return [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "task",
+                    "args": {"description": "coder 跑一条命令", "subagent_type": "coder"},
+                    "id": SUBAGENT_TASK_CALL_ID,
+                    "type": "tool_call",
+                }
+            ],
+            usage_metadata=usage_of(input_tokens=12, output_tokens=4),
+        ),
+        AIMessage(
+            content=SUBAGENT_REPLY_TEXT,
+            usage_metadata=usage_of(input_tokens=18, output_tokens=6),
+        ),
+    ]
+
+
+def subagent_execute() -> list[AIMessage]:
+    """coder 子智能体：execute（子图 interrupt → 顶层层恢复）→ 汇报。"""
+    return [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "execute",
+                    "args": {"command": APPROVAL_COMMAND},
+                    "id": SUBAGENT_EXECUTE_CALL_ID,
+                    "type": "tool_call",
+                }
+            ],
+            usage_metadata=usage_of(input_tokens=9, output_tokens=3),
+        ),
+        AIMessage(
+            content="coder 完成。",
+            usage_metadata=usage_of(input_tokens=7, output_tokens=2),
+        ),
+    ]
+
 
 def long_500_tokens() -> list[AIMessage]:
     """LONG_500_TOKENS：一条 ≥500 token 的长回复（流式分块由模型侧 chunk_size 决定）。"""
@@ -64,6 +174,162 @@ def long_500_tokens() -> list[AIMessage]:
             content=LONG_500_TEXT,
             usage_metadata=usage_of(input_tokens=120, output_tokens=LONG_TOKEN_COUNT),
         )
+    ]
+
+
+# ---- M3 场景 A 全链路（e2e）：计划 → 审批执行 → 改码 → diff → 驳回返工 → 接受 ----------
+
+SCENARIO_A_USER_TEXT = "场景A首轮：修好 calc.add 的 bug，跑一下验证，然后给我看 diff。"
+"""第 1 轮用户消息（路由关键词「场景A首轮」；不复用「第一轮」以免与 multi_turn 路由撞）。"""
+
+SCENARIO_A_REWORK_KEYWORD = "场景A返工"
+"""第 2 轮的驳回意见关键词（返工消息由 diff 审查服务生成，正文含反馈原文）。"""
+
+SCENARIO_A_THIRD_USER_TEXT = "场景A收尾轮：再补一个 CHANGELOG，确认新基线可用。"
+
+SCENARIO_A_TODO = {
+    "todos": [
+        {"content": "执行测试确认当前失败", "status": "in_progress"},
+        {"content": "修复 calc.add 的运算错误", "status": "pending"},
+        {"content": "复跑测试并确认通过", "status": "pending"},
+    ]
+}
+"""第 1 轮计划：3 步（AC-005-1 的 ≥3 步判据）。"""
+
+SCENARIO_A_EXEC_COMMAND = "printf 'lcode-scenario-a-exec-ok\\n'"
+"""第 1 轮 execute：非只读白名单命令（printf）→ 必触发审批；stdout 留作执行证据。"""
+
+SCENARIO_A_EXEC_STDOUT = "lcode-scenario-a-exec-ok\n"
+
+SCENARIO_A_ROUND1_EXEC_CALL_ID = "call-sa-round1-exec"
+SCENARIO_A_ROUND1_WRITE_CALL_ID = "call-sa-round1-write"
+SCENARIO_A_ROUND1_EDIT_CALL_ID = "call-sa-round1-edit"
+SCENARIO_A_ROUND2_WRITE_CALL_ID = "call-sa-round2-write"
+SCENARIO_A_ROUND3_WRITE_CALL_ID = "call-sa-round3-write"
+
+SCENARIO_A_CALC_BUGGY = "def add(a, b):\n    return a - b  # BUG: 应当是加法\n"
+"""种子仓库里的错误实现（第 1 轮批准前必须原样不动）。"""
+
+SCENARIO_A_CALC_FIXED = "def add(a, b):\n    return a + b\n"
+"""第 1 轮 write_file 的目标内容。"""
+
+SCENARIO_A_CALC_FINAL = (
+    'def add(a, b):\n    """返回两数之和（按驳回意见补文档串）。"""\n    return a + b\n'
+)
+"""第 2 轮按驳回意见再改一版（diff 对抗同一基线的证据）。"""
+
+SCENARIO_A_README_BEFORE = "# Demo\n\nA tiny calculator demo.\n"
+SCENARIO_A_README_AFTER = "# Demo\n\nA tiny calculator demo.\n\nFixed by LCode scenario A.\n"
+"""第 1 轮 edit_file 的目标内容（README 原文 → 追加一行）。"""
+
+SCENARIO_A_CHANGELOG = "## round 3\n\n- baseline advanced after round-2 acceptance\n"
+
+SCENARIO_A_ROUND1_REPLY = "第 1 轮完成：已修复 calc.add，等待 diff 审查。"
+SCENARIO_A_ROUND2_REPLY = "第 2 轮完成：已按驳回意见修改。"
+SCENARIO_A_ROUND3_REPLY = "第 3 轮完成：changelog 已补。"
+
+
+def scenario_a_round_one() -> list[AIMessage]:
+    """场景 A 第 1 轮：write_todos（3 步）→ execute（审批）→ write_file + edit_file（同批审批）→ 收口。
+
+    两段工具循环各形成一次 HITL interrupt：第一段单条 execute，第二段同批两条
+    （write_file/edit_file）——e2e 断言的批次语义由此覆盖。
+    """
+    return [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_todos",
+                    "args": dict(SCENARIO_A_TODO),
+                    "id": "call-sa-round1-todo",
+                    "type": "tool_call",
+                }
+            ],
+            usage_metadata=usage_of(input_tokens=40, output_tokens=12),
+        ),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "execute",
+                    "args": {"command": SCENARIO_A_EXEC_COMMAND},
+                    "id": SCENARIO_A_ROUND1_EXEC_CALL_ID,
+                    "type": "tool_call",
+                }
+            ],
+            usage_metadata=usage_of(input_tokens=60, output_tokens=18),
+        ),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "args": {"file_path": "/calc.py", "content": SCENARIO_A_CALC_FIXED},
+                    "id": SCENARIO_A_ROUND1_WRITE_CALL_ID,
+                    "type": "tool_call",
+                },
+                {
+                    "name": "edit_file",
+                    "args": {
+                        "file_path": "/README.md",
+                        "old_string": SCENARIO_A_README_BEFORE,
+                        "new_string": SCENARIO_A_README_AFTER,
+                    },
+                    "id": SCENARIO_A_ROUND1_EDIT_CALL_ID,
+                    "type": "tool_call",
+                },
+            ],
+            usage_metadata=usage_of(input_tokens=80, output_tokens=24),
+        ),
+        AIMessage(
+            content=SCENARIO_A_ROUND1_REPLY,
+            usage_metadata=usage_of(input_tokens=90, output_tokens=20),
+        ),
+    ]
+
+
+def scenario_a_round_two() -> list[AIMessage]:
+    """场景 A 第 2 轮（驳回返工）：按反馈再改 calc.py → 收口。"""
+    return [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "args": {"file_path": "/calc.py", "content": SCENARIO_A_CALC_FINAL},
+                    "id": SCENARIO_A_ROUND2_WRITE_CALL_ID,
+                    "type": "tool_call",
+                }
+            ],
+            usage_metadata=usage_of(input_tokens=70, output_tokens=16),
+        ),
+        AIMessage(
+            content=SCENARIO_A_ROUND2_REPLY,
+            usage_metadata=usage_of(input_tokens=50, output_tokens=12),
+        ),
+    ]
+
+
+def scenario_a_round_three() -> list[AIMessage]:
+    """场景 A 第 3 轮（新基线可用）：新增 CHANGELOG → 收口。"""
+    return [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_file",
+                    "args": {"file_path": "/CHANGELOG.md", "content": SCENARIO_A_CHANGELOG},
+                    "id": SCENARIO_A_ROUND3_WRITE_CALL_ID,
+                    "type": "tool_call",
+                }
+            ],
+            usage_metadata=usage_of(input_tokens=44, output_tokens=10),
+        ),
+        AIMessage(
+            content=SCENARIO_A_ROUND3_REPLY,
+            usage_metadata=usage_of(input_tokens=30, output_tokens=8),
+        ),
     ]
 
 
@@ -150,6 +416,47 @@ def tool_loop_todo() -> list[AIMessage]:
     ]
 
 
+TOOL_LS_PATH = "/"
+TOOL_LS_CALL_ID = "call-ls-1"
+
+
+def tool_loop_read_only() -> list[AIMessage]:
+    """READ_ONLY_LOOP：write_todos → ls → 收口（tap / 成本语义用例的免审批剧本）。
+
+    M3 起 write_file/edit_file/execute 恒在审批面（沙箱红线），工具循环类用例若沿用
+    写工具会停在 waiting_approval；本剧本用只读工具（ls）保留「真实工具执行 + 多次
+    模型调用」的语义，usage 数值与 TOOL_LOOP_TODO 对齐（既有断言不变）。
+    """
+    return [
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "write_todos",
+                    "args": dict(TOOL_TODO_ARGS),
+                    "id": "call-todo-1",
+                    "type": "tool_call",
+                }
+            ],
+        ),
+        AIMessage(
+            content="",
+            tool_calls=[
+                {
+                    "name": "ls",
+                    "args": {"path": TOOL_LS_PATH},
+                    "id": TOOL_LS_CALL_ID,
+                    "type": "tool_call",
+                }
+            ],
+        ),
+        AIMessage(
+            content="两步都完成了。",
+            usage_metadata=usage_of(input_tokens=40, output_tokens=15),
+        ),
+    ]
+
+
 def multi_turn() -> list[AIMessage]:
     """MULTI_TURN：两次 run 各消费一步（模型实例跨 run 复用）。"""
     return [
@@ -170,6 +477,9 @@ def stop_stream() -> list[AIMessage]:
 
 
 __all__ = [
+    "APPROVAL_COMMAND",
+    "APPROVAL_REPLY_TEXT",
+    "APPROVAL_TOOL_CALL_ID",
     "EXEC_FAIL_COMMAND",
     "EXEC_STREAM_COMMAND",
     "EXEC_STREAM_LINES",
@@ -177,17 +487,49 @@ __all__ = [
     "LONG_TOKEN_COUNT",
     "MULTI_TURN_FIRST_REPLY",
     "MULTI_TURN_SECOND_REPLY",
+    "SCENARIO_A_CALC_BUGGY",
+    "SCENARIO_A_CALC_FINAL",
+    "SCENARIO_A_CALC_FIXED",
+    "SCENARIO_A_CHANGELOG",
+    "SCENARIO_A_EXEC_COMMAND",
+    "SCENARIO_A_EXEC_STDOUT",
+    "SCENARIO_A_README_AFTER",
+    "SCENARIO_A_README_BEFORE",
+    "SCENARIO_A_REWORK_KEYWORD",
+    "SCENARIO_A_ROUND1_EDIT_CALL_ID",
+    "SCENARIO_A_ROUND1_EXEC_CALL_ID",
+    "SCENARIO_A_ROUND1_REPLY",
+    "SCENARIO_A_ROUND1_WRITE_CALL_ID",
+    "SCENARIO_A_ROUND2_REPLY",
+    "SCENARIO_A_ROUND2_WRITE_CALL_ID",
+    "SCENARIO_A_ROUND3_REPLY",
+    "SCENARIO_A_ROUND3_WRITE_CALL_ID",
+    "SCENARIO_A_THIRD_USER_TEXT",
+    "SCENARIO_A_TODO",
+    "SCENARIO_A_USER_TEXT",
     "SIMPLE_REPLY_TEXT",
     "SIMPLE_USER_TEXT",
     "STOP_STREAM_TEXT",
+    "SUBAGENT_EXECUTE_CALL_ID",
+    "SUBAGENT_REPLY_TEXT",
+    "SUBAGENT_TASK_CALL_ID",
     "TOOL_FILE_CONTENT",
     "TOOL_FILE_PATH",
+    "TOOL_LS_CALL_ID",
+    "TOOL_LS_PATH",
     "TOOL_TODO_ARGS",
+    "approval_execute",
     "long_500_tokens",
     "multi_turn",
+    "scenario_a_round_one",
+    "scenario_a_round_three",
+    "scenario_a_round_two",
     "simple_reply",
     "stop_stream",
+    "subagent_execute",
+    "subagent_task_then_reply",
     "tool_execute",
     "tool_fail",
+    "tool_loop_read_only",
     "tool_loop_todo",
 ]

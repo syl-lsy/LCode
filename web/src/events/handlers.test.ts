@@ -12,7 +12,7 @@ import { partKeyOf, useChatStore } from '@/features/chat/store';
 import { useCostStore } from '@/features/costs/store';
 import { useSessionStore } from '@/features/sessions/store';
 import { useTodoStore } from '@/features/todo/store';
-import { useDiffStore, useTerminalStore } from '@/features/workbench/store';
+import { useDiffStore, useTerminalStore, useWorkbenchStore } from '@/features/workbench/store';
 
 import { ApprovalRequestEventSchema, ApprovalResolvedEventSchema } from '@contracts/events';
 import { DiffReadyEventSchema, DiffResolvedEventSchema } from '@contracts/events';
@@ -74,6 +74,7 @@ beforeEach(() => {
   useTerminalStore.getState().reset();
   useTodoStore.getState().reset();
   useCostStore.getState().reset();
+  useWorkbenchStore.getState().reset();
 });
 
 afterEach(() => {
@@ -165,11 +166,12 @@ describe('handlers：工具卡族', () => {
 
   it('tool_call_finished（成功 + todos）→ 卡片补全 + todo 快照，且**不**重复插条目', () => {
     // 注意：started/finished 两个 fixture 的 tool_call_id 不同（同一会话里两次工具调用），
-    // 这里对齐成同一次调用再断言「配对补全」语义。
+    // 这里对齐成同一次 write_todos 调用再断言「配对补全」语义（出参摘要即 todo 更新）。
     const finished = ToolCallFinishedEventSchema.parse(toolCallFinished);
     const started = ToolCallStartedEventSchema.parse({
       ...toolCallStarted,
       tool_call_id: finished.tool_call_id,
+      tool: 'write_todos',
     });
     HANDLERS.tool_call_started(started);
 
@@ -210,10 +212,24 @@ describe('handlers：工具卡族', () => {
     }
   });
 
-  it('tool_call_finished 无 todos（单步任务）→ 不动 todoStore（AC-005-3）', () => {
+  it('tool_call_finished 无 todos（单步任务）→ 不写也不清空 todoStore（AC-005-3）', () => {
+    // 先有既有快照（write_todos 已发生过），随后非 write_todos 工具收尾
+    useTodoStore.getState().setSnapshot([{ content: '既有任务', status: 'pending' }], 't0');
     const finished = ToolCallFinishedEventSchema.parse({ ...toolCallFinished, todos: null });
 
-    HANDLERS.tool_call_started(ToolCallStartedEventSchema.parse(toolCallStarted));
+    HANDLERS.tool_call_started(ToolCallStartedEventSchema.parse(toolCallStarted)); // tool=execute
+    HANDLERS.tool_call_finished(finished);
+
+    expect(useTodoStore.getState().snapshot).toEqual([{ content: '既有任务', status: 'pending' }]);
+  });
+
+  it('非 write_todos 的 finished 携带 todos（契约违规防御）→ 不写 todoStore', () => {
+    // ToolCallFinishedEvent 无 tool 字段：以流内 started 卡的工具名核对（写者唯一纪律）
+    const finished = ToolCallFinishedEventSchema.parse(toolCallFinished); // 带 todos
+    HANDLERS.tool_call_started(
+      ToolCallStartedEventSchema.parse({ ...toolCallStarted, tool_call_id: finished.tool_call_id }),
+    ); // tool=execute ≠ write_todos
+
     HANDLERS.tool_call_finished(finished);
 
     expect(useTodoStore.getState().snapshot).toEqual([]);
@@ -269,6 +285,58 @@ describe('handlers：审批族（M3 预锚，M2 先落表）', () => {
     expect(useChatStore.getState().activeRun.state).toBe('running');
     expect(useSessionStore.getState().list[0]?.run_state).toBe('running');
   });
+
+  it('batched 批次（D3）：两条挂起只 resolved 一条 → 保持 waiting_approval；全部解决 → running', () => {
+    seedSession({ run_state: 'waiting_approval' });
+    const request1 = ApprovalRequestEventSchema.parse(approvalRequest);
+    HANDLERS.approval_request(request1);
+    const request2 = ApprovalRequestEventSchema.parse({
+      ...approvalRequest,
+      seq: request1.seq + 1,
+      approval_id: 'aprv-batch-2',
+      tool_call_id: 'call_batch_2',
+      tool: 'write_file',
+      risk_level: 'medium',
+      reason: '文件写入需要确认',
+      args: { path: 'a.py', content: 'x' },
+    });
+    HANDLERS.approval_request(request2);
+
+    // 批次入列：两条 pending、会话挂起
+    expect(useApprovalStore.getState().pendingIds).toEqual([request1.approval_id, 'aprv-batch-2']);
+    expect(useChatStore.getState().activeRun.state).toBe('waiting_approval');
+    expect(useSessionStore.getState().list[0]?.run_state).toBe('waiting_approval');
+
+    // 第一条解决：批次未清 → run 仍 waiting_approval（不得提前回 running）
+    HANDLERS.approval_resolved(
+      ApprovalResolvedEventSchema.parse({
+        ...approvalResolved,
+        seq: request2.seq + 1,
+        approval_id: request1.approval_id,
+        decision: 'approve',
+        scope: 'once',
+        edited_args: null,
+      }),
+    );
+    expect(useApprovalStore.getState().pendingIds).toEqual(['aprv-batch-2']);
+    expect(useChatStore.getState().activeRun.state).toBe('waiting_approval');
+    expect(useSessionStore.getState().list[0]?.run_state).toBe('waiting_approval');
+
+    // 最后一条解决：pendingIds 清空 → 才回 running
+    HANDLERS.approval_resolved(
+      ApprovalResolvedEventSchema.parse({
+        ...approvalResolved,
+        seq: request2.seq + 2,
+        approval_id: 'aprv-batch-2',
+        decision: 'reject',
+        edited_args: null,
+        feedback: '先不要写',
+      }),
+    );
+    expect(useApprovalStore.getState().pendingIds).toEqual([]);
+    expect(useChatStore.getState().activeRun.state).toBe('running');
+    expect(useSessionStore.getState().list[0]?.run_state).toBe('running');
+  });
 });
 
 describe('handlers：diff 族', () => {
@@ -310,6 +378,39 @@ describe('handlers：diff 族', () => {
     });
     // 基线信息仍在（accepted 后基线的呈现由 review 快照承载）
     expect(useDiffStore.getState().reviews.get(resolved.review_id)?.baseline.kind).toBe('accepted');
+  });
+
+  it('diff_ready → 自动打开/聚焦审查标签（标题 = 审查 · 第 N 轮）', () => {
+    const event = DiffReadyEventSchema.parse(diffReady);
+
+    HANDLERS.diff_ready(event);
+
+    const tabId = `review:${event.review_id}`;
+    const wb = useWorkbenchStore.getState();
+    expect(wb.tabs).toEqual([
+      { id: tabId, kind: 'review', title: `审查 · 第 ${event.round} 轮` },
+    ]);
+    expect(wb.activeTabId).toBe(tabId);
+    expect(wb.collapsed).toBe(false);
+  });
+
+  it('diff_ready 重放：已存在同 id 标签 → 不重复开、不抢激活焦点、只同步标题', () => {
+    const event = DiffReadyEventSchema.parse(diffReady);
+    HANDLERS.diff_ready(event);
+    // 用户切走并收起面板
+    useWorkbenchStore.getState().openTab({ kind: 'terminal', id: 'main', title: '终端' });
+    useWorkbenchStore.getState().setCollapsed(true);
+
+    HANDLERS.diff_ready({ ...event, round: event.round + 1 });
+
+    const tabId = `review:${event.review_id}`;
+    const wb = useWorkbenchStore.getState();
+    expect(wb.tabs.filter((tab) => tab.id === tabId)).toHaveLength(1);
+    expect(wb.activeTabId).toBe('terminal:main'); // 不抢焦点
+    expect(wb.collapsed).toBe(true); // 不强行展开
+    expect(wb.tabs.find((tab) => tab.id === tabId)?.title).toBe(
+      `审查 · 第 ${event.round + 1} 轮`,
+    );
   });
 });
 

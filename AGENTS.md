@@ -13,7 +13,7 @@ LCode 是**个人开发项目**：ZCode 风格的交互式 Coding Agent，定位
 
 **产品形态**：Web 应用。客户端路线图：Web（主）→ Electron 套壳 Desktop → CLI 轻客户端（可选）→ TUI（三期，届时再定"云端看板 vs 本地执行版"）。
 
-**当前状态**：决策基线冻结；**PRD 定稿**（`docs/PRD.md` v1.8，增量 diff 演进）。**M1 完成**（tag `m1-done`，已推 GitHub，最新 CI run 绿）：`contracts/` 契约冻结 v1（五域 + 109 用例 harness + TS/zod 生成管线）、ADR-001~005 与前后端架构详设、双端脚手架与根门禁工具链。**M2 进行中**（聊天+沙箱，REQ-001~004/014/015）：已落地十表 ORM+迁移+DB 生命周期、`get_llm` 工厂+模型注册表+`GET /models`、前端 SSE 客户端/帧解析器；待落地沙箱双适配器、deepagents 装配与外层图、SSE 端点+发送消息、成本追踪、聊天/终端 UI。所有架构决策已冻结为基线，改动需用户确认。
+**当前状态**：决策基线冻结；**PRD 定稿**（`docs/PRD.md` v1.8，增量 diff 演进）。**M1 完成**（tag `m1-done`，已推 GitHub，最新 CI run 绿）：`contracts/` 契约冻结 v1（五域 + 109 用例 harness + TS/zod 生成管线）、ADR-001~005 与前后端架构详设、双端脚手架与根门禁工具链。**M2 完成**（提交 `264b3d1`，CI 双 job 绿）：十表 ORM+迁移、沙箱双适配器、deepagents 装配、SSE 端点与事件协议、成本追踪、聊天/终端 UI。**M3 已在工作区实现、待用户审阅提交**（审批+diff+planning，REQ-005/006/007/010/013/016）：HITL 四决策与 resume、AUTO 分类器与沙箱红线、diff 基线链与审查面板、todo/子智能体/compact 事件、场景 A e2e 与「0 绕审」不变量；收口清单见 `docs/arch/m3-closure-checklist.md`（本地文档，不入库）。所有架构决策已冻结为基线，改动需用户确认。
 
 ## 技术栈（冻结基线）
 

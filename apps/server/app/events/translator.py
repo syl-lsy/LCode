@@ -45,12 +45,25 @@ U2「AgentRef 推导」实测口径（回归锚 = `test/unit/test_event_translat
   防「同文气泡双发 + usage 双计」；粘性「已流式」标志兜无 id 的同源聚合尾巴，跨过
   工具回合（ToolMessage 收口）即清零——非流式模型的下一轮终答是新调用，不得误伤；
 - P0 不产 `browser_action`（本模块压根不构造它；出口另有 `P0_EVENT_TYPES` 硬守卫）；
-- 审批族（`__interrupt__` → approval_request）属 M3（A3 §10），当前安静跳过。
+- 审批族（M3）：`translate()` 对 `__interrupt__` 载荷仍不产事件（approval_request 的
+  `approval_id` 由服务层在审批行落库后传入，见 `approval_request_event`）；**映射**
+  走独立入口 `describe_interrupt()`——把 `HITLRequest.action_requests` 按 `(name,args)`
+  与在飞 tool calls 的尾部切片对位成 `ApprovalTarget`。对位失败 **fail-closed**
+  （抛 `InterruptMappingError` → run 以 error 收敛，绝不自动放行）；
+- resume 段去重：`resumed_tool_calls`（富快照：id/tool/args/agent_ref）或
+  `resumed_tool_call_ids`（仅 id）播种 `_tool_calls`——resume 时被挂起的工具调用会
+  重放 started，`task` 调用还要靠富快照重建 task 栈（子智能体事件归属）；
+  `resumed_closed_tool_call_ids` 播种 `_finished_tool_calls`——审批恢复会让图从
+  checkpoint 续跑并把**整段历史**的 AIMessage/ToolMessage 重发一遍，只播种在飞调用
+  不够：历史里已完成的调用会二次公告 started 与 finished（同一 run 内重复工具卡）；
+  `resumed_message_ids` 播种 `_closed_upstream_ids`——after_model 与 execute 节点的
+  最终状态更新都会把已处理过的 AIMessage 重发，不播种会重复 message_finished 与
+  模型调用记账（token 双计）。
 """
 
 import re
 import uuid
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -62,6 +75,7 @@ from lcode_contracts.common import AgentRef, TodoItem, Usage
 from lcode_contracts.errors import RunErrorObj, ToolErrorObj
 from lcode_contracts.events import (
     EVENT_TYPES,
+    ApprovalRequestEvent,
     BaseEvent,
     MessageDeltaEvent,
     MessageFinishedEvent,
@@ -113,6 +127,18 @@ RiskLevel = Literal["low", "medium", "high"]
 
 RiskLevelResolver = Callable[[str, Mapping[str, Any]], RiskLevel | None]
 """风险等级解析器：由运行时注入（查 agent/permissions 规则表；本包禁止 import agent/）。"""
+
+ApprovalReasonResolver = Callable[[str, Mapping[str, Any]], str]
+"""审批理由解析器：纯函数（agent/permissions.approval_reason），由运行时注入。"""
+
+
+class InterruptMappingError(ValueError):
+    """中断对位失败（fail-closed 信号）。
+
+    审批只能按「在飞 tool calls ↔ action_requests」的确定映射落行；映射不出来时
+    必须让 run 以 error 收敛（run_service 捕获后按 INTERNAL 收敛），**绝不**退回
+    「全部放行」或「丢弃审批」。
+    """
 
 
 def _utc_now() -> datetime:
@@ -181,6 +207,40 @@ class ModelCallRecord:
     role: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class ApprovalTarget:
+    """一次待审批工具调用的对位结果（translator → run_service → approvals 行/事件）。
+
+    `tool_call_id` 是审批行与后续 resume 决策的唯一锚：approvals 表的
+    `tool_call_id` 列、`approval_request` 事件、以及 resume 段 translator 播种
+    全部用它；`source_message_id` 是该调用所属 AI 消息的上游 id（resume 段播种
+    `_closed_upstream_ids` 用，防 after_model 重发消息导致重复记账）。
+    """
+
+    tool_call_id: str
+    tool: str
+    args: dict[str, Any]
+    risk_level: Literal["medium", "high"]
+    reason: str | None
+    agent_ref: AgentRef | None = None
+    source_message_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class InFlightToolCall:
+    """一条在飞工具调用的跨段快照（resume 播种用；见 EventTranslator 构造器）。
+
+    只播 id 会丢掉两件影响正确性的事：`task` 调用需要重建 task 栈（子智能体事件的
+    role/agent 归属），以及 updates/tap 双通道的 started 去重需要知道该调用已在飞。
+    """
+
+    tool_call_id: str
+    tool: str
+    args: dict[str, Any]
+    agent_ref: AgentRef | None = None
+    source_message_id: str | None = None
+
+
 @dataclass
 class _TapFinish:
     """tap 中间件经 custom 通道寄存的收口附言（计时/错误分类权威源，先于 ToolMessage 到）。
@@ -206,6 +266,7 @@ class _OpenToolCall:
     started_at: datetime | None
     subagent_role: str | None = None
     tap_finish: _TapFinish | None = None  # tap 附言（custom 通道先到的 finished）
+    source_message_id: str | None = None  # 携带该 tool_call 的 AI 消息上游 id（resume 播种用）
 
 
 # ---------------------------------------------------------------- 翻译器
@@ -228,8 +289,13 @@ class EventTranslator:
         now: Callable[[], datetime] = _utc_now,
         new_id: Callable[[], str] = _uuid4_str,
         risk_level_for: RiskLevelResolver | None = None,
+        approval_reason: ApprovalReasonResolver | None = None,
         idempotent_tools: frozenset[str] = DEFAULT_IDEMPOTENT_TOOLS,
         subagent_roles: frozenset[str] = DEFAULT_SUBAGENT_ROLES,
+        resumed_tool_call_ids: Iterable[str] = (),
+        resumed_tool_calls: Iterable[InFlightToolCall] = (),
+        resumed_closed_tool_call_ids: Iterable[str] = (),
+        resumed_message_ids: Iterable[str] = (),
     ) -> None:
         self._session_id = session_id
         self._run_id = run_id
@@ -237,6 +303,7 @@ class EventTranslator:
         self._now = now
         self._new_id = new_id
         self._risk_level_for = risk_level_for
+        self._approval_reason = approval_reason
         self._idempotent_tools = idempotent_tools
         self._subagent_roles = subagent_roles
 
@@ -246,11 +313,96 @@ class EventTranslator:
         self._closed_upstream_ids: set[str] = set()  # 已收口消息的上游 id（模型侧 id 全局唯一）
         self._tool_calls: dict[str, _OpenToolCall] = {}  # tool_call_id → 在途调用
         self._finished_tool_calls: set[str] = set()  # 已收口调用（双通道去重）
+        self._seen_tool_call_ids: set[str] = set()  # 本段出现过的全部调用 id（跨段播种用）
         self._task_stack: list[_OpenToolCall] = []  # 活跃 task() 调用栈（内层在后）
         self._pending_structured: dict[str, Any] | None = None
         self._usage_totals = Usage()
         self._model_calls: list[ModelCallRecord] = []
         self._run_started = False
+
+        # resume 播种（m3-plan Phase 1 F）：审批通过的调用在 resume 段会被重放
+        # started（tap + after_model 状态更新两条源），挂起回合的 AIMessage 也会被
+        # after_model / execute 节点的最终状态更新重发。播种后两条去重锚天然生效，
+        # 且**不影响**本段的新调用。
+        #
+        # 两种形态：`resumed_tool_calls`（富快照：含 tool/args/agent_ref，可重建 task
+        # 栈——子智能体事件归属靠它）优先；`resumed_tool_call_ids`（仅 id）用于轻量
+        # 调用方，播种为占位锚（只做 started 去重）。
+        for call in resumed_tool_calls:
+            self._seed_tool_call(
+                _OpenToolCall(
+                    tool_call_id=call.tool_call_id,
+                    tool=call.tool,
+                    args=dict(call.args),
+                    agent_ref=call.agent_ref,
+                    started_at=None,
+                    subagent_role=(
+                        str(call.args.get("subagent_type"))
+                        if call.tool == PROTOCOL_TASK_TOOL
+                        else None
+                    ),
+                    source_message_id=call.source_message_id,
+                )
+            )
+        for call_id in resumed_tool_call_ids:
+            self._seed_tool_call(
+                _OpenToolCall(
+                    tool_call_id=call_id,
+                    tool="",
+                    args={},
+                    agent_ref=None,
+                    started_at=None,
+                )
+            )
+        # 已收口调用的播种（resume 段历史重放去重）：审批挂起会让图从 checkpoint 续跑，
+        # execute 节点最终更新会把**整段历史**的 AIMessage/ToolMessage 再发一遍——不只是
+        # 挂起批次。只播种在飞调用（上面的两条）时，历史里**已完成**的调用会重发
+        # started 与 finished（同一 run 内同一 tool_call_id 出现两条卡片事件）。
+        # 播种面同时写入两道去重锚：started 检查 `_finished_tool_calls`，finished 由
+        # `_claim_tool_finish` 认领——历史重放两条通道都被拦住。
+        for closed_id in resumed_closed_tool_call_ids:
+            if not closed_id:
+                continue
+            self._finished_tool_calls.add(closed_id)
+            self._seen_tool_call_ids.add(closed_id)
+        self._closed_upstream_ids.update(resumed_message_ids)
+
+    def _seed_tool_call(self, call: _OpenToolCall) -> None:
+        """播种一条在飞调用（幂等）；task 调用同时入 task 栈（恢复子智能体归属）。"""
+        self._seen_tool_call_ids.add(call.tool_call_id)
+        if call.tool_call_id in self._tool_calls:
+            return
+        self._tool_calls[call.tool_call_id] = call
+        if call.tool == PROTOCOL_TASK_TOOL:
+            self._task_stack.append(call)
+
+    @property
+    def open_tool_calls(self) -> tuple[InFlightToolCall, ...]:
+        """当前在飞（未收口）工具调用的快照（park 时写入 ResumeContext，resume 段回流）。"""
+        return tuple(
+            InFlightToolCall(
+                tool_call_id=call.tool_call_id,
+                tool=call.tool,
+                args=dict(call.args),
+                agent_ref=call.agent_ref,
+                source_message_id=call.source_message_id,
+            )
+            for call in self._tool_calls.values()
+        )
+
+    @property
+    def handled_message_ids(self) -> tuple[str, ...]:
+        """已收口消息的上游 id（跨段播种：execute 节点最终更新会重发整段历史）。"""
+        return tuple(self._closed_upstream_ids)
+
+    @property
+    def closed_tool_call_ids(self) -> tuple[str, ...]:
+        """本段**已收口**（不在飞）的工具调用 id（resume 播种：历史重放去重）。
+
+        只取「出现过但已不在飞」的调用；在飞调用由 `open_tool_calls` 的富快照播种
+        （还要恢复 task 栈/归属），两者互补且不重叠。
+        """
+        return tuple(self._seen_tool_call_ids - set(self._tool_calls))
 
     # ------------------------------------------------------------ 对外入口
 
@@ -329,6 +481,118 @@ class EventTranslator:
         """逐次模型调用记账快照（只读；一次调用一条，含 0 token 调用）。"""
         return tuple(self._model_calls)
 
+    # ------------------------------------------------------------ 审批族（M3）
+
+    def describe_interrupt(self, namespace: tuple[str, ...], payload: Any) -> list[ApprovalTarget]:
+        """`HITLRequest` 中断 → `ApprovalTarget` 列表（fail-closed 对位，m3-plan D3）。
+
+        对位口径（安装版 langchain 1.4.6 `HumanInTheLoopMiddleware` batched 模式）：
+        - 一个 model turn 一个 interrupt；`action_requests` **按序**列出被挂起的工具调用；
+        - interrupt 在 after_model 节点抛点，**先于工具执行**——但模型节点的状态更新
+          已经提交：translator 已从 updates 通道为这些调用发过 `tool_call_started`
+          （spike 实测），因此它们在 `_tool_calls`（在飞集合）里；
+        - 按 `(name, args)` 精确对位：在飞集合按入栈序扫描（游标只前进），同名同参
+          的重复调用按出现序一一配对；`task` 半开（父图 task 的 ToolMessage 要等
+          resume 后才产生）不参与对位也不报错——它不在 action_requests 里。
+
+        `namespace` 非空 = 子图重复条目：返回 []（根层 `()` 是唯一入口，spike §1.3）。
+        任何无法确定映射的情形（载荷畸形、数量不符、名称/参数对不上）抛
+        `InterruptMappingError`——调用方必须让 run 以 error 收敛，绝不自动放行。
+        """
+        if namespace:
+            return []
+        value: Any = getattr(payload, "value", payload)
+        action_requests = value.get("action_requests") if isinstance(value, Mapping) else None
+        if not isinstance(action_requests, (list, tuple)) or not action_requests:
+            raise InterruptMappingError(
+                "审批中断载荷缺少 action_requests（无法映射到工具调用，按 fail-closed 终止）"
+            )
+
+        candidates = list(self._tool_calls.values())
+        targets: list[ApprovalTarget] = []
+        matched_ids: set[str] = set()
+        cursor = 0
+        for entry in action_requests:
+            name, args = self._action_request_parts(entry)
+            found_index = None
+            for index in range(cursor, len(candidates)):
+                candidate = candidates[index]
+                if candidate.tool_call_id in matched_ids:
+                    continue
+                if candidate.tool != name:
+                    continue
+                if dict(candidate.args) != args:
+                    continue
+                found_index = index
+                break
+            if found_index is None:
+                raise InterruptMappingError(
+                    f"审批中断无法对位到在飞工具调用（tool={name}）："
+                    "按 fail-closed 终止运行，不自动放行"
+                )
+            matched_ids.add(candidates[found_index].tool_call_id)
+            cursor = found_index + 1
+            targets.append(self._approval_target(candidates[found_index], name, args))
+
+        # 同一 tool_call_id 只映射一次（子图/根图重复条目已在命名空间层拦下，这里兜底）
+        unique: dict[str, ApprovalTarget] = {}
+        for target in targets:
+            unique.setdefault(target.tool_call_id, target)
+        return list(unique.values())
+
+    def approval_request_event(
+        self, approval_id: str, target: ApprovalTarget
+    ) -> ApprovalRequestEvent:
+        """审批行落库后的事件构造入口（`approval_id` 由 service 传入）。
+
+        事件是审批卡片的实时来源；`risk_level`/`reason` 来自 translator 注入的解析器
+        （agent/permissions），未知工具按 medium 兜底（进审批面的调用至少 medium）。
+        """
+        return ApprovalRequestEvent(
+            seq=0,
+            session_id=self._session_id,
+            run_id=self._run_id,
+            agent=target.agent_ref,
+            created_at=self._now(),
+            approval_id=approval_id,
+            tool_call_id=target.tool_call_id,
+            tool=target.tool,
+            args=target.args,
+            risk_level=target.risk_level,
+            reason=target.reason,
+        )
+
+    def _action_request_parts(self, entry: Any) -> tuple[str, dict[str, Any]]:
+        """单条 action_request → (name, args)；结构不合法即 fail-closed。"""
+        if not isinstance(entry, Mapping):
+            raise InterruptMappingError("审批中断的 action_request 不是对象（fail-closed）")
+        name = entry.get("name")
+        raw_args = entry.get("args")
+        if not isinstance(name, str) or not name:
+            raise InterruptMappingError("审批中断的 action_request 缺少工具名（fail-closed）")
+        if raw_args is not None and not isinstance(raw_args, Mapping):
+            raise InterruptMappingError("审批中断的 action_request 参数不是对象（fail-closed）")
+        return name, dict(raw_args or {})
+
+    def _approval_target(
+        self, call: _OpenToolCall, name: str, args: dict[str, Any]
+    ) -> ApprovalTarget:
+        risk = None
+        if self._risk_level_for is not None:
+            risk = self._risk_level_for(name, args)
+        reason = None
+        if self._approval_reason is not None:
+            reason = self._approval_reason(name, args)
+        return ApprovalTarget(
+            tool_call_id=call.tool_call_id,
+            tool=name,
+            args=dict(args),
+            risk_level=risk if risk in ("medium", "high") else "medium",
+            reason=reason,
+            agent_ref=call.agent_ref,
+            source_message_id=call.source_message_id,
+        )
+
     # ------------------------------------------------------------ messages 通道
 
     def _translate_messages(self, parsed: _RawEvent) -> list[BaseEvent]:
@@ -374,7 +638,10 @@ class EventTranslator:
         tool_events = [
             event
             for tool_call in message.tool_calls or []
-            if (event := self._tool_call_started(agent_ref, tool_call)) is not None
+            if (
+                event := self._tool_call_started(agent_ref, tool_call, source_message_id=message.id)
+            )
+            is not None
         ]
         open_message = self._open_messages.get(key)
         finish_reason = self._finish_reason(message)
@@ -415,7 +682,9 @@ class EventTranslator:
     def _translate_updates(self, parsed: _RawEvent) -> list[BaseEvent]:
         payload = parsed.payload
         if isinstance(payload, Mapping) and "__interrupt__" in payload:
-            return []  # 审批族属 M3（A3 §10）：P0 安静跳过 interrupt 载荷
+            # 审批族（M3）：approval_request 的 approval_id 由服务层审批行落库后传入，
+            # 本通道不构造事件；映射入口是 describe_interrupt()（见模块 docstring）。
+            return []
         agent_ref = self._agent_ref(parsed.namespace, {})
         events: list[BaseEvent] = []
         if isinstance(payload, Mapping):
@@ -490,9 +759,15 @@ class EventTranslator:
         )
         if isinstance(event, ToolCallStartedEvent):
             # F2：custom 的 started 与 messages/updates 共用 _tool_calls 锚——先到的
-            # 通道登记锚，后到的同 id 调用一律吞掉（两种顺序各恰好 1 条 started）
-            if event.tool_call_id in self._tool_calls:
+            # 通道登记锚，后到的同 id 调用一律吞掉（两种顺序各恰好 1 条 started）。
+            # `_finished_tool_calls` 也参与判定：resume 段历史重放里「已收口」的调用
+            # 不得再次公告（否则同一 run 出现第二张工具卡）。
+            if (
+                event.tool_call_id in self._tool_calls
+                or event.tool_call_id in self._finished_tool_calls
+            ):
                 return []
+            self._seen_tool_call_ids.add(event.tool_call_id)
             call = _OpenToolCall(
                 tool_call_id=event.tool_call_id,
                 tool=event.tool,
@@ -707,15 +982,23 @@ class EventTranslator:
 
     # ------------------------------------------------------------ 工具族装配
 
-    def _tool_call_started(self, agent_ref: AgentRef | None, tool_call: Any) -> BaseEvent | None:
+    def _tool_call_started(
+        self,
+        agent_ref: AgentRef | None,
+        tool_call: Any,
+        *,
+        source_message_id: str | None = None,
+    ) -> BaseEvent | None:
         if not isinstance(tool_call, Mapping):
             tool_call = {}
         name = str(tool_call.get("name") or "")
         raw_args = tool_call.get("args")
         args: dict[str, Any] = dict(raw_args) if isinstance(raw_args, Mapping) else {}
         call_id = str(tool_call.get("id") or self._new_id())
-        if call_id in self._tool_calls:
-            return None  # 去重：同一调用不重复发 started（messages/updates 双通道兜底）
+        if call_id in self._tool_calls or call_id in self._finished_tool_calls:
+            # 去重：同一调用不重复发 started（三通道 + resume 历史重放）
+            return None
+        self._seen_tool_call_ids.add(call_id)
         risk = None
         if self._risk_level_for is not None:
             risk = self._risk_level_for(name, args)
@@ -726,6 +1009,7 @@ class EventTranslator:
             agent_ref=agent_ref,
             started_at=self._now(),
             subagent_role=str(args.get("subagent_type")) if name == PROTOCOL_TASK_TOOL else None,
+            source_message_id=source_message_id,
         )
         self._tool_calls[call_id] = call
         if name == PROTOCOL_TASK_TOOL:
@@ -758,6 +1042,7 @@ class EventTranslator:
     def _on_tool_message(self, message: ToolMessage, live_ref: AgentRef | None) -> list[BaseEvent]:
         if not self._claim_tool_finish(message.tool_call_id):
             return []  # 去重锚：同一调用在 messages/updates/custom 三通道只收口一次（F2）
+        self._seen_tool_call_ids.add(message.tool_call_id)
         self._closed_streamed = False  # 工具回合边界：粘性标志只服务当前回合的聚合尾巴
         call = self._tool_calls.pop(message.tool_call_id, None)
         # 工具卡片归属跟随其 started 事件（task 调用自身的卡片归父智能体）

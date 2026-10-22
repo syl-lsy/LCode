@@ -51,7 +51,11 @@ MESSAGE_PAGE_SIZE: int = 50
 
 @dataclass(frozen=True, slots=True)
 class RunLaunch:
-    """一次 run 的启动入参快照（会话行读出的固化值；run_service 据此装配执行单元）。"""
+    """一次 run 的启动入参快照（会话行读出的固化值；run_service 据此装配执行单元）。
+
+    `approval_mode` 是 run 启动快照（M3 D5）：本 run 的审批策略固定用它，决策窗口内
+    会话模式变化只影响下一条消息；resume 段同样复用该值（避免 when 翻转）。
+    """
 
     session_id: str
     run_id: str
@@ -59,6 +63,7 @@ class RunLaunch:
     model: str
     reasoning_effort: str
     provider: str
+    approval_mode: str = "manual"
     user_id: str = "local"
 
 
@@ -135,6 +140,7 @@ class MessageService(BaseService):
                     model=session_row.model,
                     reasoning_effort=session_row.reasoning_effort,
                     provider=session_row.sandbox_provider,
+                    approval_mode=session_row.approval_mode,
                     user_id=session_row.user_id,
                 )
             )

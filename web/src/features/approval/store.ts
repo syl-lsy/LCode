@@ -103,9 +103,13 @@ export const useApprovalStore = create<ApprovalStore>((set) => ({
   upsertFromRest: (items) =>
     set((s) => {
       const byId = new Map(s.byId);
-      const pending: string[] = [];
+      const restPending = new Set<string>();
       for (const item of items) {
         const existing = byId.get(item.id);
+        // 终态不回退：本地已知终态而 REST 仍报 pending（陈旧快照/并发窗口）→ 保留本地
+        // 终态原样，跳过该条（预期内的乱序合并，不打 warn）。pending → 终态、新条目、
+        // pending 字段刷新则以 REST 为准（服务端落库投影是最新的服务端事实）。
+        if (existing && existing.status !== 'pending' && item.status === 'pending') continue;
         byId.set(item.id, {
           id: item.id,
           sessionId: item.session_id,
@@ -123,9 +127,20 @@ export const useApprovalStore = create<ApprovalStore>((set) => ({
           decidedBy: existing?.decidedBy ?? null,
           scope: item.scope ?? null,
         });
-        if (item.status === 'pending') pending.push(item.id);
+        if (item.status === 'pending') restPending.add(item.id);
       }
-      return { byId, pendingIds: pending };
+      // pendingIds = 本批 REST pending ∪ 本地仍为 pending 的旧项，再剔除已终态/不存在的
+      // id（并集 + 终态剪枝，旧序在前、新增追加保持稳定顺序）。**不整体替换**：GET
+      // /approvals 按 session_id 过滤，「不在本批响应里」≠「已处理」——跨会话挂起项、
+      // SSE 事件先于 REST 快照到达的窗口都不允许丢卡；只有本地明确终态才剪枝。
+      const pendingIds: string[] = [];
+      for (const id of s.pendingIds) {
+        if (byId.get(id)?.status === 'pending') pendingIds.push(id);
+      }
+      for (const id of restPending) {
+        if (!pendingIds.includes(id)) pendingIds.push(id);
+      }
+      return { byId, pendingIds };
     }),
   applyResolved: ({ approvalId, decision, scope = null, editedArgs = null, feedback = null, decidedBy }) =>
     set((s) => {

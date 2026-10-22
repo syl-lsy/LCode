@@ -76,9 +76,13 @@ describe('replay/full-rebuild：事件序列重建完整 UI 状态', () => {
     expect(screen.getByTestId('approval-row')).toHaveAttribute('data-status', 'edited');
     // 改动卡 accepted（AC-007-4 呈现）
     expect(screen.getByTestId('diff-card')).toHaveAttribute('data-verdict', 'accepted');
-    // compact 完成态行（AC-010-1）
+    // compact 完成态行（AC-010-1，k/M 人读格式；回放只见 finished 也重建条目）
     expect(screen.getByTestId('compact-note')).toHaveAttribute('data-phase', 'finished');
-    expect(screen.getByTestId('compact-note')).toHaveTextContent('49,970');
+    expect(screen.getByTestId('compact-note')).toHaveTextContent('约 50k → 9.8k tokens');
+    // todo 计划面板：write_todos finished 无 started 卡 → 快照落库 → 面板重建（REQ-005）
+    expect(screen.getByTestId('todo-panel')).toBeInTheDocument();
+    expect(screen.getByTestId('todo-progress')).toHaveTextContent('2/4');
+    expect(screen.getAllByTestId('todo-item')).toHaveLength(4);
 
     // 终端：exec 标注 + paused 徽标
     expect(screen.getByTestId('terminal-exec')).toHaveAttribute('data-exec-id', sandboxOutput.exec_id);

@@ -135,6 +135,27 @@ async def db_session():
 
 
 @pytest.fixture
+def approval_env(async_client, tmp_path):  # noqa: ARG001 —— 依赖它确保 app/DB 就绪
+    """审批流用例的运行时三依赖替身（沙箱管理器 / checkpointer / 模型工厂）。
+
+    ⚠️ saver 必须**每测一个实例**并在 override 里复用：依赖每请求重新求值，若现场
+    构造新 saver，resume 请求拿到空 checkpoint（图从 START 重跑 + Command 输入报错）。
+    事件管线走真件（真 DB 短事务 + 真 seq + 真广播）。
+    """
+    from langgraph.checkpoint.memory import InMemorySaver
+
+    from app.dependencies import get_checkpointer, get_model_factory, get_sandbox_manager
+    from test.support.approval_env import ApprovalEnv
+
+    env = ApprovalEnv(tmp_path)
+    saver = InMemorySaver()
+    app.dependency_overrides[get_sandbox_manager] = lambda: env.manager
+    app.dependency_overrides[get_checkpointer] = lambda: saver
+    app.dependency_overrides[get_model_factory] = lambda: env.model_factory
+    yield env
+
+
+@pytest.fixture
 async def async_client(db_session):
     """进程内 ASGI 客户端（不开真实端口）：覆盖 get_db 依赖，指向每测清空后的 session。"""
 

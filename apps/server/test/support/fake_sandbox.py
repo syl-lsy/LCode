@@ -28,11 +28,13 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from time import sleep
+from typing import Literal
 
 from deepagents.backends.protocol import (
     FILE_NOT_FOUND,
     IS_DIRECTORY,
     PERMISSION_DENIED,
+    EditResult,
     ExecuteResponse,
 )
 
@@ -44,6 +46,7 @@ from app.sandbox.base import (
     SandboxUnavailable,
     combine_output,
 )
+from app.utils.exec_context import EXEC_ID_CONTEXT
 
 
 @dataclass
@@ -76,6 +79,25 @@ class ExecStep:
     def unavailable(cls, reason: str = "scripted unavailable") -> ExecStep:
         """意外不可用剧本：抛 `SandboxUnavailable`（AC-002-4 重建路径的输入）。"""
         return cls(raises=SandboxUnavailable(reason))
+
+
+@dataclass(frozen=True, slots=True)
+class SideEffectRecord:
+    """一次**工具侧**沙箱副作用（M3「0 绕审」不变量测试的证据面）。
+
+    `exec_id` 来自 tap 中间件写入的 `EXEC_ID_CONTEXT`（工具调用期间有效；diff 链的
+    git 命令在 run 收口后的后台任务里执行，读到 None）。判据口径：
+
+    - `kind="command"`：`execute` 工具（或 `edit_file` 的服务端脚本）真的执行了命令；
+    - `kind="upload"`：`write_file` / `edit_file` 真的把内容写到了沙箱文件。
+
+    只有 `exec_id` 非空的记录才是「工具执行」——用它和 approvals 决策行做集合相等
+    核对，就能证明「没有任何危险工具调用绕过审批执行」。
+    """
+
+    kind: Literal["command", "upload"]
+    exec_id: str | None
+    detail: str
 
 
 @dataclass
@@ -116,9 +138,15 @@ class FakeSandbox(LcodeSandbox):
         self.calls: list[str] = []
         """方法调用轨迹（如 ["create", "pause", "kill"]），顺序即发生顺序。"""
         self.commands: list[str] = []
-        """execute 收到的命令原文轨迹。"""
+        """execute 收到的命令原文轨迹（含 diff 链内部命令，见 `tool_commands`）。"""
         self.uploaded: list[str] = []
         """upload_files 写过的沙箱侧路径轨迹。"""
+        self.side_effects: list[SideEffectRecord] = []
+        """工具侧副作用轨迹（带 exec_id；「0 绕审」不变量测试的唯一执行证据面）。
+
+        只记录 `EXEC_ID_CONTEXT` 有值（= 处在工具调用内）的命令/写入；diff 链等后台
+        git 命令的 exec_id 为 None，同样保留在列表里但由测试按 exec_id 过滤。
+        """
         self.unavailable_reason = ""
         self.create_timeout_seconds: int | None = None
         self._configured_id = sandbox_id
@@ -128,6 +156,18 @@ class FakeSandbox(LcodeSandbox):
         self._real_exec_timeout_seconds = real_exec_timeout_seconds
 
     # ------------------------------------------------------------------ 生命周期
+
+    @property
+    def tool_commands(self) -> list[str]:
+        """**工具命令**轨迹（排除 diff 链内部命令：git / pwd / cd…根目录探测）。
+
+        M3 Phase 4 起 run 收口会在沙箱内跑 git（基线/diff），这些命令与"工具执行了什么"
+        无关，却会混进 `commands`。断言「工具命令恰好执行一次/未执行」用本属性；
+        需要核对 diff 链命令时直接用 `commands`。
+        """
+        return [
+            command for command in self.commands if not command.startswith(("git ", "pwd", "cd "))
+        ]
 
     def create(self, *, timeout_seconds: int | None = None) -> None:
         self.calls.append("create")
@@ -193,6 +233,7 @@ class FakeSandbox(LcodeSandbox):
         self, command: str, *, timeout: int | None, exec_id: str | None
     ) -> ExecuteResponse:
         self.commands.append(command)
+        self.side_effects.append(SideEffectRecord(kind="command", exec_id=exec_id, detail=command))
         step = self._take_step(command)
         if step is not None:
             if step.raises is not None:
@@ -236,6 +277,11 @@ class FakeSandbox(LcodeSandbox):
     def _write_file(self, path: str, content: bytes) -> None:
         target = self._local(path)
         self.uploaded.append(path)
+        # 文件写入的 exec_id 同样来自工具上下文（write_file 在 tap 的 awrap_tool_call
+        # 内、经 asyncio.to_thread 执行 —— to_thread 复制 contextvars，值可达）。
+        self.side_effects.append(
+            SideEffectRecord(kind="upload", exec_id=EXEC_ID_CONTEXT.get(), detail=path)
+        )
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(content)
@@ -254,6 +300,56 @@ class FakeSandbox(LcodeSandbox):
             raise SandboxFileError(FILE_NOT_FOUND, path, detail=str(exc)) from exc
         except PermissionError as exc:
             raise SandboxFileError(PERMISSION_DENIED, path, detail=str(exc)) from exc
+
+    # ------------------------------------------------------------------ edit 语义
+
+    def edit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ) -> EditResult:
+        """`edit_file` 的替身实现（**虚拟根映射**，不走上游的宿主绝对路径脚本）。
+
+        安装版 `BaseSandbox.edit` 用「服务端脚本 + 绝对路径」实现替换；在 FakeSandbox
+        里绝对路径 `/x` 映射到 `root/x`（见 `_local`），宿主根下并没有沙箱文件，脚本会
+        报 `file_not_found`。替身在此按自己的虚拟文件系统完成替换语义（唯一性/未命中
+        错误码与上游一致），保持工具面行为可测——生产适配器仍走上游脚本（真沙箱路径
+        一致，无需覆盖）。
+        """
+        if old_string == new_string:
+            return EditResult(error="Error: old_string and new_string must be different")
+        try:
+            content = self._read_file(file_path).decode("utf-8")
+        except SandboxFileError as exc:
+            return EditResult(error=f"Error editing file '{file_path}': {exc.kind}")
+        occurrences = content.count(old_string)
+        if occurrences == 0:
+            return EditResult(error=f"Error: old_string not found in {file_path}")
+        if occurrences > 1 and not replace_all:
+            return EditResult(
+                error=(
+                    f"Error: old_string appears {occurrences} times in {file_path}; "
+                    "provide more context or set replace_all=true"
+                )
+            )
+        updated = content.replace(old_string, new_string, -1 if replace_all else 1)
+        try:
+            self._write_file(file_path, updated.encode("utf-8"))
+        except SandboxFileError as exc:
+            return EditResult(error=f"Error editing file '{file_path}': {exc.kind}")
+        return EditResult(path=file_path, occurrences=occurrences if replace_all else 1)
+
+    async def aedit(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ) -> EditResult:
+        """异步面：同步实现委托（替身无 IO 并发需求）。"""
+        return self.edit(file_path, old_string, new_string, replace_all=replace_all)
 
     # ---------------------------------------------------------------------- 内部
 
@@ -294,6 +390,7 @@ __all__ = [
     "FakeSandbox",
     "FakeSandboxRegistry",
     "FakeSandboxState",
+    "SideEffectRecord",
     "clone_with_files",
     "git_probe_script",
 ]

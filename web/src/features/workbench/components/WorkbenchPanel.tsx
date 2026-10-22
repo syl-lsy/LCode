@@ -1,7 +1,9 @@
 import { useCallback, useRef } from 'react';
 
 import { useWorkbenchStore, PANEL_WIDTH_MAX, PANEL_WIDTH_MIN } from '../store';
+import type { WorkbenchTab } from '../store';
 
+import { DiffReviewPanel } from './DiffReviewPanel';
 import { PanelTabs } from './PanelTabs';
 import { PlaceholderPane } from './PlaceholderPane';
 import { TerminalView } from '../terminal/TerminalView';
@@ -12,31 +14,37 @@ import { TerminalView } from '../terminal/TerminalView';
  * - 贴右全高；收起 = 宽度 0 + 滑出画布右缘（collapsed/width 由 workbenchStore
  *   持久化，A4 §9.1 localStorage `lcode.panel.*`）；
  * - 左缘拖拽分隔条：220–480px，拖拽实时写 workbenchStore.width（change 即持久化）；
- * - 标签内容按 kind 分发：terminal → TerminalView；placeholder → PlaceholderPane；
- *   review/subagent 为 M3/M4 落位，先以占位呈现（不伪造功能）。
+ * - 标签内容按 kind 分发：terminal → TerminalView；review → DiffReviewPanel（M3，
+ *   reviewId 从标签 id 解出）；placeholder → PlaceholderPane；subagent 为 M4 落位。
  */
 
 const DRAG_HANDLE_PX = 5;
 
-/** tabKind → M2 内容分发；review/subagent 的完整面板 M3/M4 接入。 */
-function TabContent({ kind, title }: { kind: string; title: string }) {
-  if (kind === 'terminal') return <TerminalView />;
-  if (kind === 'review') {
-    return (
-      <PlaceholderPane
-        title="审查"
-        milestone="M3"
-        description="diff_ready 就绪后，逐文件改动与裁决将在这里呈现。"
-      />
-    );
+/** review 标签 id 前缀（tabIdOf('review', id) 的产物形态， 解析用）。 */
+const REVIEW_TAB_PREFIX = 'review:';
+
+/** tabKind → 内容分发。 */
+function TabContent({ tab, currentSessionId }: { tab: WorkbenchTab; currentSessionId: string | null }) {
+  if (tab.kind === 'terminal') return <TerminalView />;
+  if (tab.kind === 'review') {
+    // 标签 id = `review:<reviewId>`（openReviewTab/tabIdOf 写入），面板据此定位审查
+    return <DiffReviewPanel reviewId={tab.id.slice(REVIEW_TAB_PREFIX.length)} currentSessionId={currentSessionId} />;
   }
-  if (kind === 'subagent') {
+  if (tab.kind === 'subagent') {
     return <PlaceholderPane title="子智能体进度" milestone="M4" description="task() 子智能体的流式进度将在这里呈现。" />;
   }
-  return <PlaceholderPane title={title} milestone="P1" />;
+  return <PlaceholderPane title={tab.title} milestone="P1" />;
 }
 
-export function WorkbenchPanel() {
+export interface WorkbenchPanelProps {
+  /**
+   * 当前会话 id（App 层自 sessionStore 下传；feature 隔离规则禁止 workbench 直接
+   * import sessions store）。review 面板用它做会话防串台校验。缺省 null 时跳过。
+   */
+  readonly currentSessionId?: string | null;
+}
+
+export function WorkbenchPanel({ currentSessionId = null }: WorkbenchPanelProps) {
   const width = useWorkbenchStore((s) => s.width);
   const collapsed = useWorkbenchStore((s) => s.collapsed);
   const tabs = useWorkbenchStore((s) => s.tabs);
@@ -106,7 +114,7 @@ export function WorkbenchPanel() {
               description="点右上「＋ 新增标签」打开终端或占位面板。"
             />
           ) : (
-            <TabContent kind={activeTab.kind} title={activeTab.title} />
+            <TabContent tab={activeTab} currentSessionId={currentSessionId} />
           )}
         </div>
       </div>

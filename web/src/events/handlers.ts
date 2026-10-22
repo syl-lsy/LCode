@@ -21,7 +21,7 @@ import { partKeyOf, useChatStore } from '@/features/chat/store';
 import { useCostStore } from '@/features/costs/store';
 import { useSessionStore } from '@/features/sessions/store';
 import { useTodoStore } from '@/features/todo/store';
-import { useDiffStore, useTerminalStore } from '@/features/workbench/store';
+import { useDiffStore, useTerminalStore, useWorkbenchStore } from '@/features/workbench/store';
 
 import { deltaBuffers, flushAllChannels, flushChannel, terminalBuffer } from './buffers';
 import type { EventByType, HandlerMap } from './dispatcher';
@@ -111,10 +111,16 @@ export const HANDLERS: HandlerMap = {
       truncated: event.truncated ?? false,
     });
     const todos = event.todos;
-    if (todos != null && todos.length > 0) {
-      // todo 面板数据源 = 最近一次 write_todos 全量快照（REQ-005；单步任务不产出）
-      useTodoStore.getState().setSnapshot(todos, event.created_at);
+    if (todos == null || todos.length === 0) {
+      // null/空数组都不动快照（REQ-005：store 无「清空」语义，单步任务不产出 todos）
+      return;
     }
+    // 契约口径：todos 仅由 write_todos 携带；ToolCallFinishedEvent 无 tool 字段，
+    // 借流内 started 卡核对工具名（卡缺失——如重放只截到 finished——按 todos 放行）。
+    const started = useChatStore.getState().byId.get(event.tool_call_id);
+    if (started?.kind === 'toolcard' && started.tool !== 'write_todos') return;
+    // todo 面板数据源 = 最近一次 write_todos 全量快照（REQ-005；单步任务不产出）
+    useTodoStore.getState().setSnapshot(todos, event.created_at);
   },
 
   approval_request: (event) => {
@@ -151,8 +157,13 @@ export const HANDLERS: HandlerMap = {
     useChatStore
       .getState()
       .setApprovalItemStatus(event.approval_id, DECISION_STATUS[event.decision]);
-    useChatStore.getState().noteApprovalSettled();
-    useSessionStore.getState().setRunState(event.session_id, 'running');
+    // 批次守门（D3 batched interrupt）：同 run 多条 pending 时，逐条 resolved 只
+    // 更新该卡；pendingIds 清空才把 run 拉回 running（否则保持 waiting_approval）。
+    const allSettled = useApprovalStore.getState().pendingIds.length === 0;
+    useChatStore.getState().noteApprovalSettled(allSettled);
+    useSessionStore
+      .getState()
+      .setRunState(event.session_id, allSettled ? 'running' : 'waiting_approval');
   },
 
   diff_ready: (event) => {
@@ -175,6 +186,12 @@ export const HANDLERS: HandlerMap = {
       deletionsTotal: event.deletions_total,
       createdAt: event.created_at,
     });
+    // M3：自动打开/聚焦审查标签（useWorkbenchStore 是 UI 编排 store，action 允许
+    // 跨 feature 调用，§2.2 唯一例外）。已存在同 id 标签时只同步标题——不重复开、
+    // 不抢用户当前激活的其它标签、不强行展开收起的面板（openReviewTab 语义）。
+    useWorkbenchStore
+      .getState()
+      .openReviewTab(event.review_id, `审查 · 第 ${event.round} 轮`);
   },
 
   diff_resolved: (event) => {

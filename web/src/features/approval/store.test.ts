@@ -120,6 +120,62 @@ describe('approvalStore：REST 恢复（AC-006-5 挂起跨刷新）', () => {
   });
 });
 
+describe('approvalStore：REST 合并防终态回退（P2 回归）', () => {
+  it('场景 A：本地已 approved，REST 陈旧快照仍报 pending → 保持 approved 且不进 pendingIds', () => {
+    useApprovalStore.getState().upsertPending(PENDING_BASE);
+    useApprovalStore.getState().applyResolved({
+      approvalId: 'ap-1',
+      decision: 'approve',
+      decidedBy: 'local',
+    });
+
+    // 恢复流程的并发窗口：GET /approvals 响应快照早于本地决策落库
+    useApprovalStore.getState().upsertFromRest([approvalItem()]);
+
+    const store = useApprovalStore.getState();
+    expect(store.byId.get('ap-1')).toMatchObject({
+      status: 'approved',
+      decision: 'approve',
+      decidedBy: 'local',
+    });
+    expect(store.pendingIds).toEqual([]);
+  });
+
+  it('场景 B：本地 pending，REST 报终态（auto_approved）→ 以终态为准并移出 pendingIds', () => {
+    useApprovalStore.getState().upsertPending(PENDING_BASE);
+
+    useApprovalStore.getState().upsertFromRest([
+      approvalItem({ id: 'ap-1', status: 'auto_approved', decision: 'approve' }),
+    ]);
+
+    const store = useApprovalStore.getState();
+    expect(store.byId.get('ap-1')).toMatchObject({ status: 'auto_approved', decision: 'approve' });
+    expect(store.pendingIds).toEqual([]);
+  });
+
+  it('场景 C：本地两条 pending，REST（按 session 过滤）只回一条 → 并集语义保留未回条目', () => {
+    useApprovalStore.getState().upsertPending({ ...PENDING_BASE, id: 'ap-a' });
+    useApprovalStore.getState().upsertPending({ ...PENDING_BASE, id: 'ap-b' });
+
+    useApprovalStore.getState().upsertFromRest([approvalItem({ id: 'ap-a' })]);
+
+    // 语义选择：pendingIds = REST pending ∪ 本地仍 pending 项（并集 + 终态剪枝）。
+    // GET /approvals 按 session_id 过滤，「不在响应里」≠「已处理」（跨会话挂起项、
+    // SSE 先于 REST 到达的窗口都不允许丢）；锁定为不整体替换。
+    expect(useApprovalStore.getState().pendingIds).toEqual(['ap-a', 'ap-b']);
+  });
+
+  it('场景 D（回归）：空 store 拉回一批 → pendingIds = REST pending 子集（稳定顺序）', () => {
+    useApprovalStore.getState().upsertFromRest([
+      approvalItem({ id: 'ap-2' }),
+      approvalItem({ id: 'ap-1' }),
+      approvalItem({ id: 'ap-3', status: 'auto_approved', decision: 'approve' }),
+    ]);
+
+    expect(useApprovalStore.getState().pendingIds).toEqual(['ap-2', 'ap-1']);
+  });
+});
+
 describe('approvalStore：deciding 提交态', () => {
   it('setDeciding 增删互不影响他人', () => {
     useApprovalStore.getState().setDeciding('ap-1', true);

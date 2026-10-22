@@ -213,7 +213,12 @@ export interface ChatStore {
     error?: RunErrorPayload | null;
   }) => void;
   noteApprovalPending: () => void;
-  noteApprovalSettled: () => void;
+  /**
+   * 审批批次守门（D3 batched interrupt）：只有 `allSettled`（该批挂起全部解决）
+   * 为 true 时才把 waiting_approval 清回 running；批次未清时保持等待态
+   * （Composer 不可输入、头部徽标不消失）。
+   */
+  noteApprovalSettled: (allSettled: boolean) => void;
   /** RUN_NOT_ACTIVE 兜底收敛（F12）：stop 打到已终态 run → 前端回到可输入态，不误报「停止失败」 */
   markRunEnded: () => void;
 
@@ -425,10 +430,12 @@ export const useChatStore = create<ChatStore>((set) => ({
   noteApprovalPending: () =>
     set((s) => ({ activeRun: { ...s.activeRun, state: 'waiting_approval' } })),
 
-  noteApprovalSettled: () =>
-    set((s) => ({
-      activeRun: s.activeRun.state === 'waiting_approval' ? { ...s.activeRun, state: 'running' } : s.activeRun,
-    })),
+  noteApprovalSettled: (allSettled) =>
+    set((s) =>
+      allSettled && s.activeRun.state === 'waiting_approval'
+        ? { activeRun: { ...s.activeRun, state: 'running' } }
+        : {},
+    ),
 
   // F12：RUN_NOT_ACTIVE（stop 打到已终态 run）兜底——与 run 终态事件同口径收敛 idle
   // （保留 runId 供参照）；已 idle 幂等不换引用。

@@ -204,26 +204,28 @@ async def test_multi_turn_context_carried(sandbox: FakeSandbox, saver: InMemoryS
 async def test_tool_loop_executes_tools_and_emits_tap_events(
     sandbox: FakeSandbox, saver: InMemorySaver
 ) -> None:
-    """工具循环：write_todos + write_file 真执行；tap 发计时/状态 custom 流（AC-003-2 图侧）。"""
-    model = ScriptedChatModel(steps=scripts.tool_loop_todo())
+    """工具循环：write_todos + ls 真执行；tap 发计时/状态 custom 流（AC-003-2 图侧）。
+
+    M3 起写类工具（write_file/edit_file/execute）恒在审批面——本用例只验 tap/工具执行
+    语义，故用只读工具（ls）避开挂起；写工具的审批与执行由 `test_approval_flow.py` 覆盖。
+    """
+    model = ScriptedChatModel(steps=scripts.tool_loop_read_only())
     outcome, collector = await drive(
-        model=model, sandbox=sandbox, saver=saver, text="建个 todo 并写个 hello 文件"
+        model=model, sandbox=sandbox, saver=saver, text="建个 todo 并看下目录"
     )
 
     assert outcome.status == "finished"
-    # write_file 真落盘（FakeSandbox 真子进程链路）
-    written = sandbox.root / scripts.TOOL_FILE_PATH.lstrip("/")
-    assert written.read_text(encoding="utf-8") == scripts.TOOL_FILE_CONTENT
+    assert sandbox.commands, "ls 是真工具调用（FakeSandbox 真子进程链路）"
 
     customs = collector.custom_payloads()
     tap_started = [p for p in customs if p.get("type") == "tool_call_started"]
     tap_finished = [p for p in customs if p.get("type") == "tool_call_finished"]
     tools_started = {p.get("tool") for p in tap_started}
-    assert {"write_todos", "write_file"} <= tools_started
+    assert {"write_todos", "ls"} <= tools_started
 
     finished_by_id = {p.get("tool_call_id"): p for p in tap_finished}
-    assert set(finished_by_id) >= {"call-todo-1", "call-file-1"}
-    for call_id in ("call-todo-1", "call-file-1"):
+    assert set(finished_by_id) >= {"call-todo-1", scripts.TOOL_LS_CALL_ID}
+    for call_id in ("call-todo-1", scripts.TOOL_LS_CALL_ID):
         payload = finished_by_id[call_id]
         assert payload["status"] == "success"
         assert payload["duration_ms"] >= 0, "tap 必须计时"
@@ -275,7 +277,7 @@ async def test_run_usage_aggregates_scripted_usage_for_model_calls(
     model_calls），本用例按终态面锁定同一口径（剧本只给收口步带 usage_metadata：
     前两步工具调用无用量）。
     """
-    model = ScriptedChatModel(steps=scripts.tool_loop_todo())
+    model = ScriptedChatModel(steps=scripts.tool_loop_read_only())
     outcome, _ = await drive(
         model=model,
         sandbox=sandbox,

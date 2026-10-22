@@ -34,6 +34,12 @@ from lcode_contracts.findings import ReviewerFindings
 
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 
+SUBAGENT_NAMES: frozenset[str] = frozenset({"general-purpose", "explorer", "coder", "reviewer"})
+"""四个预置子智能体名（AUTO 规则分类器按它判"已知类型"，未知类型 fail-closed）。"""
+
+READ_ONLY_SUBAGENTS: frozenset[str] = frozenset({"explorer", "reviewer"})
+"""只读子智能体（工具面剔除写类/execute/task；AUTO 规则 R1 的判定依据）。"""
+
 READ_ONLY_EXCLUDED: tuple[str, ...] = (
     "write_file",
     "edit_file",
@@ -100,4 +106,11 @@ def build_subagents(
     ]
 
 
-__all__ = ["PROMPTS_DIR", "READ_ONLY_EXCLUDED", "build_subagents", "load_prompt"]
+__all__ = [
+    "PROMPTS_DIR",
+    "READ_ONLY_EXCLUDED",
+    "READ_ONLY_SUBAGENTS",
+    "SUBAGENT_NAMES",
+    "build_subagents",
+    "load_prompt",
+]

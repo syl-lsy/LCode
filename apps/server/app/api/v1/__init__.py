@@ -23,11 +23,21 @@ SSE 端点自设 `request.state.is_stream = True`（跳过 `/api/` 成功信封�
 
 from fastapi import APIRouter
 
-from app.api.v1 import costs, events, messages, models, runs, sandbox, sessions
+from app.api.v1 import (
+    approvals,
+    costs,
+    diff_reviews,
+    events,
+    messages,
+    models,
+    runs,
+    sandbox,
+    sessions,
+)
 
 api_router = APIRouter(prefix="/api/v1")
 
-# M2 挂载（A3 §10 任务 3/7/8；M3 的 approvals/diff_reviews 届时增量接入）：
+# M2 挂载（A3 §10 任务 3/7/8；M3 的 diff_reviews 届时增量接入）：
 api_router.include_router(models.router)  # 任务 3：GET /models（AC-014-1）
 api_router.include_router(sessions.router)  # 任务 7：/sessions 五端点（含 DELETE 联动 kill）
 api_router.include_router(messages.router)  # 任务 7：POST/GET /sessions/{id}/messages
@@ -35,5 +45,7 @@ api_router.include_router(events.router)  # 任务 7：GET /sessions/{id}/events
 api_router.include_router(runs.router)  # 任务 6/7：POST /runs/{id}/stop（幂等）
 api_router.include_router(costs.router)  # 任务 8：GET /costs/summary + /sessions/{id}/costs
 api_router.include_router(sandbox.router)  # 任务 4/8：GET /sessions/{id}/sandbox
+api_router.include_router(approvals.router)  # M3 Phase 1：GET /approvals + 决策 + resume
+api_router.include_router(diff_reviews.router)  # M3 Phase 4：diff 详情/文件/裁决（REQ-007）
 
 __all__ = ["api_router"]

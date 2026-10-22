@@ -306,6 +306,17 @@ _active_runs = _build_active_run_registry()
 """进程级在跑 run 句柄表（stop/DELETE 借此定位执行中的任务；跨请求存活，见 get_run_service）。"""
 
 
+def _build_approval_resume_registry() -> Any:
+    """审批 resume 上下文的进程级单例（类型 = run_service.ApprovalResumeRegistry）。"""
+    from app.services.run_service import ApprovalResumeRegistry
+
+    return ApprovalResumeRegistry()
+
+
+_approval_resume = _build_approval_resume_registry()
+"""进程级审批续跑上下文（waiting 段在 A 请求收口、决策 resume 在 B 请求——必须跨请求）。"""
+
+
 def get_run_service(
     db: Annotated[AsyncSession, Depends(get_db)],
     pipeline: Annotated[EventPipeline, Depends(get_event_pipeline)],
@@ -314,12 +325,23 @@ def get_run_service(
     checkpointer: Annotated[InMemorySaver, Depends(get_checkpointer)],
     model_factory: Annotated[ModelFactoryLike, Depends(get_model_factory)],
 ) -> Any:
-    """run 编排 service 装配（消息/停止/成本/沙箱/删除五组端点共用的唯一装配点）。
+    """run 编排 service 装配（消息/停止/成本/沙箱/删除/审批恢复共用的唯一装配点）。
 
     本函数是 `api/` → `services/` 的合法桥（A3 §1.2）：run_service 需要 agent 编排与
     沙箱管理器，路由文件不得直接 import 这两层——类型锚点收在这里。
     """
+    from app.services.diff_service import prepare_review_short_tx  # 局部导入：防环
     from app.services.run_service import RunService  # 局部导入：避免 services↔dependencies 环
+
+    async def _prepare_diff(launch: Any) -> None:
+        """run 正常收口后的 diff 就绪（M3 Phase 4；自持短事务，git 在沙箱内执行）。"""
+        await prepare_review_short_tx(
+            session_id=launch.session_id,
+            run_id=launch.run_id,
+            user_id=launch.user_id,
+            manager=manager,
+            pipeline=pipeline,
+        )
 
     return RunService(
         db,
@@ -329,6 +351,8 @@ def get_run_service(
         model_factory=model_factory,
         model_registry=registry,
         active_runs=_active_runs,
+        approval_resume=_approval_resume,
+        diff_runner=_prepare_diff,
     )
 
 

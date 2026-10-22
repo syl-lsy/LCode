@@ -11,6 +11,11 @@
 场景路由（假模型按用户消息内容选剧本，见 e2e/fake_runtime.py）：
 `长文`→LONG_500 / `执行命令`→TOOL_EXECUTE / `失败的命令`→TOOL_FAIL /
 `长输出`→STOP_STREAM / `第一轮`·`刚才`→MULTI_TURN / 其余→SIMPLE_REPLY。
+
+M3 审批面（REQ-006/013）：execute/write_file/edit_file 恒在 interrupt 面，工具回合会先
+发 `approval_request` 并让 run 停在 `waiting_approval`。回合消费统一走 `read_turn`——
+它读到 approval_request 后经决策端点逐条批准（scope=once），再继续读流到 run 终态；
+收集到的事件列表保留 approval_request/approval_resolved（回放断言仍可见审批卡片）。
 """
 
 import asyncio
@@ -25,6 +30,8 @@ from pydantic import TypeAdapter
 
 from lcode_contracts.events import P0_EVENT_TYPES, Event
 from lcode_contracts.rest import (
+    ApprovalDecisionAck,
+    ApprovalPage,
     MessagePage,
     MessageSendAck,
     SessionCost,
@@ -85,6 +92,45 @@ async def session_cost(client: httpx.AsyncClient, session_id: str) -> SessionCos
     """会话成本（契约 SessionCost 校验：model 段 + sandbox 段）。"""
     response = await client.get(f"/api/v1/sessions/{session_id}/costs")
     return SessionCost.model_validate(_unwrap(response))
+
+
+async def get_session(client: httpx.AsyncClient, session_id: str) -> SessionDetail:
+    """会话详情（契约 SessionDetail 校验；run_state 是审批挂起/恢复的 REST 投影）。"""
+    response = await client.get(f"/api/v1/sessions/{session_id}")
+    return SessionDetail.model_validate(_unwrap(response))
+
+
+async def list_approvals(
+    client: httpx.AsyncClient,
+    *,
+    status: str | None = None,
+    session_id: str | None = None,
+) -> ApprovalPage:
+    """审批列表（契约 ApprovalPage 校验；AC-006-5 刷新恢复入口 status=pending）。"""
+    params = {
+        key: value for key, value in (("status", status), ("session_id", session_id)) if value
+    }
+    response = await client.get("/api/v1/approvals", params=params)
+    return ApprovalPage.model_validate(_unwrap(response))
+
+
+async def decide_approval(
+    client: httpx.AsyncClient,
+    approval_id: str,
+    *,
+    decision: str = "approve",
+    scope: str = "once",
+    edited_args: dict[str, Any] | None = None,
+    feedback: str | None = None,
+) -> ApprovalDecisionAck:
+    """审批决策（契约 ApprovalDecisionAck 校验；批准仅本次生效，不升级会话模式）。"""
+    payload: dict[str, Any] = {"decision": decision, "scope": scope}
+    if edited_args is not None:
+        payload["edited_args"] = edited_args
+    if feedback is not None:
+        payload["feedback"] = feedback
+    response = await client.post(f"/api/v1/approvals/{approval_id}/decide", json=payload)
+    return ApprovalDecisionAck.model_validate(_unwrap(response))
 
 
 # ------------------------------------------------------------------ SSE 客户端
@@ -224,14 +270,46 @@ def _assert_strictly_increasing(events: list[dict[str, Any]]) -> None:
     assert len(set(seqs)) == len(seqs), "事件 seq 出现重复（重放/实时去重失效）"
 
 
+async def read_turn(
+    stream: SSEStream,
+    client: httpx.AsyncClient,
+    *,
+    predicate: Callable[[dict[str, Any]], bool] = _is_run_terminal,
+    timeout: float = 90.0,
+) -> list[dict[str, Any]]:
+    """消费一个回合直到谓词命中；期间逐条批准 `approval_request` 后继续读流。
+
+    - 一条 `approval_request` 决策一次（scope=once）：一批可能含多条（batched
+      fan-out），只处理第一条会留下其余 pending，服务端不会 resume；
+    - 决策走真 REST 端点（不绕审批面），事件列表同时保留 approval_request 与
+      approval_resolved，供卡片/回放断言使用；
+    - **读到事件即刻决策、不轮询 run_state**：服务端 `_park_for_approval` 保证
+      `approval_request` 可见时 run 行已是 `waiting_approval`、resume 上下文已播种，
+      本路径因此也是「同毫秒点击」竞态的 e2e 回归锚；
+    - 挂起停车是 run 的非终态（无 run_status(waiting_approval)），因此读取不会在
+      挂起处提前返回——决策后事件继续回流，直到 run 终态。
+    """
+    deadline = monotonic() + timeout
+    collected: list[dict[str, Any]] = []
+    while True:
+        remaining = deadline - monotonic()
+        assert remaining > 0, f"read_turn 超时（已收 {len(collected)} 条事件）"
+        event = await stream.next_event(timeout=min(remaining, 30.0))
+        collected.append(event)
+        if predicate(event):
+            return collected
+        if event["type"] == "approval_request":
+            await decide_approval(client, event["approval_id"])
+
+
 async def _completed_turn(
     client: httpx.AsyncClient, content: str, *, timeout: float = 90.0
 ) -> tuple[SessionDetail, MessageSendAck, list[dict[str, Any]]]:
-    """全链一次：建会话 → 开 SSE → 发消息 → 收到 run 终态（返回全部事件）。"""
+    """全链一次：建会话 → 开 SSE → 发消息 → 收到 run 终态（审批逐条自动批准）。"""
     session = await create_session(client)
     async with SSEStream(client, session.id) as stream:
         ack = await send_message(client, session.id, content)
-        events = await stream.read_until(_is_run_terminal, timeout=timeout)
+        events = await read_turn(stream, client, timeout=timeout)
     return session, ack, events
 
 
@@ -308,7 +386,7 @@ async def test_sandbox_output_streams_to_terminal(api_client: httpx.AsyncClient)
     session = await create_session(api_client)
     async with SSEStream(api_client, session.id) as stream:
         await send_message(api_client, session.id, "帮我执行命令看看沙箱环境（执行命令）。")
-        events = await stream.read_until(_is_run_terminal, timeout=60)
+        events = await read_turn(stream, api_client, timeout=60)
         events += await stream.drain(1.5)  # 工具线程桥的尾部 stdout 块可能晚于终态广播落库
 
     types = [event["type"] for event in events]
@@ -532,3 +610,90 @@ async def test_cost_written_after_turn(api_client: httpx.AsyncClient) -> None:
     assert cost.model.output_tokens > 0, "模型段 output_tokens 必须落库（剧本 7）"
     assert cost.model_cost > 0, "按注册表单价估算的费用必须 > 0"
     assert cost.sandbox.rate_per_hour > 0, "沙箱段估算随会话成本返回（AC-015-3 两段结构）"
+
+
+# ------------------------------------------------------------------ M3 审批（REQ-006/013）
+
+
+async def test_approval_roundtrip_rebuilds_card_from_replay(
+    api_client: httpx.AsyncClient,
+) -> None:
+    """AC-006-5/AC-008-3 [e2e]：execute 挂起 → 决策 → 续跑 → 重放重建审批卡片终态。
+
+    与 `read_turn` 的「读到处即批准」不同，本用例显式停在 `approval_request`：先断言
+    run 的 REST 挂起投影（run_state=waiting_approval）与 pending 列表（刷新恢复入口），
+    再走真决策端点，最后验证重放能把卡片从 pending 重建成 approved 终态。
+    """
+    session = await create_session(api_client)
+    async with SSEStream(api_client, session.id) as stream:
+        ack = await send_message(api_client, session.id, "帮我执行命令看看沙箱环境（执行命令）。")
+        pending = await stream.read_until(
+            lambda event: event["type"] == "approval_request", timeout=60
+        )
+        request = pending[-1]
+
+        # 审批卡片字段：工具名/完整入参/风险级来自审批行（卡片必须展示命令原文）
+        assert request["tool"] == "execute"
+        assert request["args"]["command"] == scripts.EXEC_STREAM_COMMAND
+        assert request["risk_level"] == "high"
+        assert request["tool_call_id"]
+        approval_id = request["approval_id"]
+
+        # 挂起态（AC-006-5）：run_state 是刷新恢复的关键投影；pending 列表可恢复卡片
+        detail = await get_session(api_client, session.id)
+        assert detail.run_state == "waiting_approval"
+        pending_page = await list_approvals(api_client, status="pending", session_id=session.id)
+        assert [item.id for item in pending_page.items] == [approval_id]
+        assert pending_page.items[0].status == "pending"
+        assert pending_page.items[0].tool == request["tool"]
+        assert pending_page.items[0].args["command"] == scripts.EXEC_STREAM_COMMAND
+
+        decided = await decide_approval(api_client, approval_id)
+        assert decided.approval.id == approval_id
+        assert decided.approval.status == "approved"
+        assert decided.approval.decision == "approve"
+        assert decided.approval.scope == "once"
+        assert decided.run_id == ack.run_id
+
+        tail = await stream.read_until(_is_run_terminal, timeout=60)
+    events = pending + tail
+
+    resolved = [event for event in events if event["type"] == "approval_resolved"]
+    assert len(resolved) == 1, f"一次决策只应回声一条 approval_resolved：{resolved}"
+    assert resolved[0]["approval_id"] == approval_id
+    assert resolved[0]["decision"] == "approve"
+    assert resolved[0]["scope"] == "once"
+    assert resolved[0]["decided_by"] == "user"
+    assert request["seq"] < resolved[0]["seq"], "approval_resolved 必须晚于 approval_request"
+
+    executed = [
+        event
+        for event in events
+        if event["type"] == "tool_call_finished"
+        and event["tool_call_id"] == request["tool_call_id"]
+    ]
+    assert executed, "批准后工具必须执行并收口"
+    assert executed[-1]["status"] == "success"
+    assert executed[-1]["exit_code"] == 0
+    assert resolved[0]["seq"] < executed[-1]["seq"], "决策回声先于工具执行收口"
+
+    terminal = [event for event in events if _is_run_terminal(event)]
+    assert terminal[-1]["phase"] == "finished", "批准后续跑必须收敛到 finished"
+
+    # 刷新（无水位全量重放）：审批卡片终态纯事件可重建（AC-008-3）
+    async with SSEStream(api_client, session.id) as replay:
+        replayed = await replay.read_until(_is_run_terminal, timeout=60)
+    replay_requests = [event for event in replayed if event["type"] == "approval_request"]
+    replay_resolved = [event for event in replayed if event["type"] == "approval_resolved"]
+    assert [event["approval_id"] for event in replay_requests] == [approval_id]
+    assert [(event["approval_id"], event["decision"]) for event in replay_resolved] == [
+        (approval_id, "approve")
+    ], "重放必须重建审批卡片终态（approve 决策与 approval_id 配对）"
+    assert replay_requests[0]["seq"] < replay_resolved[0]["seq"], "重放保持先请求后决策"
+    assert any(
+        event["type"] == "tool_call_finished"
+        and event["tool_call_id"] == request["tool_call_id"]
+        and event["status"] == "success"
+        for event in replayed
+    ), "重放必须可重建工具成功终态"
+    assert _is_run_terminal(replayed[-1]) and replayed[-1]["phase"] == "finished"

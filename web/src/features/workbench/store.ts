@@ -29,6 +29,12 @@ export interface WorkbenchStore {
   width: number;
   collapsed: boolean;
   openTab: (tab: { kind: TabKind; id: string; title: string }) => void;
+  /**
+   * diff_ready 自动开审查标签（M3）：新开 = 追加 + 激活 + 展开面板；已存在同 id
+   * = 只同步标题——不重复开、不抢用户当前激活的其它标签、不强行展开收起的面板
+   * （重放/重复 diff_ready 不打扰用户）。
+   */
+  openReviewTab: (reviewId: string, title: string) => void;
   closeTab: (tabId: string) => void;
   setActiveTab: (tabId: string | null) => void;
   setWidth: (width: number) => void;
@@ -122,6 +128,22 @@ export const useWorkbenchStore = create<WorkbenchStore>((set) => ({
         collapsed: false,
       };
     }),
+  openReviewTab: (reviewId, title) =>
+    set((s) => {
+      const tabId = tabIdOf('review', reviewId);
+      const exists = s.tabs.some((tab) => tab.id === tabId);
+      if (!exists) {
+        return {
+          tabs: [...s.tabs, { id: tabId, kind: 'review' as const, title }],
+          activeTabId: tabId,
+          collapsed: false,
+        };
+      }
+      // 已存在（diff_ready 重放/重复事件）：只更新标题，不抢激活焦点、不展开面板
+      return {
+        tabs: s.tabs.map((tab) => (tab.id === tabId ? { ...tab, title } : tab)),
+      };
+    }),
   closeTab: (tabId) =>
     set((s) => {
       const tabs = s.tabs.filter((tab) => tab.id !== tabId);
@@ -181,6 +203,12 @@ export interface DiffStore {
     feedback?: string | null;
     decidedBy?: string | null;
   }) => void;
+  /**
+   * REST 全量回填（审查面板刷新恢复；M3 Phase 4）。DiffReviewDetail → 快照的
+   * 一次性投影；终态不回退（对齐 approvalStore.upsertFromRest）——本地已知
+   * 终态而 REST 快照仍报 pending（陈旧快照/并发窗口）时保留本地终态原样。
+   */
+  upsertFromRest: (detail: DiffReviewDetail) => void;
   cachePatch: (reviewId: string, detail: DiffFileDetail) => void;
   reset: () => void;
 }
@@ -220,8 +248,48 @@ export const useDiffStore = create<DiffStore>((set) => ({
     set((s) => {
       const existing = s.reviews.get(reviewId);
       if (!existing) return {};
+      // feedback 单调合并（取超集）：后端对同一裁决只追加系统注记（驳回遇活动 run
+      // 时「返工未自动启动…」，注记在 commit + emit 之前拼进 feedback，见
+      // diff_service.verdict 预检）——SSE diff_resolved、POST 响应、GET 详情三者
+      // 携带同一 feedback 字符串。取更长仍需保留：三者到达顺序不定（响应可先于/
+      // 后于事件）、事件可能重放；「同一 review 的注记只会追加、不会减少」这一
+      // 不变量下，更长的一方即超集，后到的完整串不会被先到的短串冲掉。feedback
+      // 一方为 null（accepted 口径）时直接取非空侧。
+      const mergedFeedback =
+        existing.feedback === null || feedback === null
+          ? feedback
+          : feedback.length > existing.feedback.length
+            ? feedback
+            : existing.feedback;
       const reviews = new Map(s.reviews);
-      reviews.set(reviewId, { ...existing, verdict, feedback, decidedBy });
+      reviews.set(reviewId, { ...existing, verdict, feedback: mergedFeedback, decidedBy });
+      return { reviews };
+    }),
+  upsertFromRest: (detail) =>
+    set((s) => {
+      const reviews = new Map(s.reviews);
+      const existing = reviews.get(detail.id);
+      // 终态不回退：本地已知终态而 REST 仍报 pending（陈旧快照/并发窗口）→ 保留
+      // 本地终态原样（verdict/feedback/decidedBy 整组），其余以 REST 为准（服务端
+      // 落库投影是最新的服务端事实）。patch 缓存始终保留（懒加载成果不因回填丢失）。
+      const keepLocalTerminal =
+        existing !== undefined && existing.verdict !== 'pending' && detail.verdict === 'pending';
+      reviews.set(detail.id, {
+        id: detail.id,
+        sessionId: detail.session_id,
+        round: detail.round,
+        baseline: detail.baseline,
+        files: detail.files,
+        additionsTotal: detail.additions_total,
+        deletionsTotal: detail.deletions_total,
+        // REST 详情不带 patch_ref（事件字段）：按后端 patch_ref 生成惯例合成
+        patchRef: `/api/v1/diff-reviews/${detail.id}`,
+        createdAt: detail.created_at,
+        verdict: keepLocalTerminal ? existing.verdict : detail.verdict,
+        feedback: keepLocalTerminal ? existing.feedback : detail.feedback ?? null,
+        decidedBy: keepLocalTerminal ? existing.decidedBy : detail.decided_by ?? null,
+        patches: existing?.patches ?? new Map(),
+      });
       return { reviews };
     }),
   cachePatch: (reviewId, detail) =>

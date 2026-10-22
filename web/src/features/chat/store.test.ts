@@ -154,11 +154,29 @@ describe('chatStore：activeRun 状态机（run 终态收敛）', () => {
     useChatStore.getState().noteApprovalPending();
     expect(useChatStore.getState().activeRun.state).toBe('waiting_approval');
 
-    useChatStore.getState().noteApprovalSettled();
+    useChatStore.getState().noteApprovalSettled(true);
     expect(useChatStore.getState().activeRun.state).toBe('running');
 
     useChatStore.getState().applyRunStatus({ subject: 'run', phase: 'stopped', runId: 'run-1', createdAt: 't' });
     expect(useChatStore.getState().activeRun).toMatchObject({ state: 'idle', error: null });
+  });
+
+  it('批次守门：noteApprovalSettled(false) 保持 waiting_approval（全部挂起解决才回 running）', () => {
+    useChatStore.getState().applyRunStatus({ subject: 'run', phase: 'started', runId: 'run-1', createdAt: 't' });
+    useChatStore.getState().noteApprovalPending();
+
+    useChatStore.getState().noteApprovalSettled(false);
+    expect(useChatStore.getState().activeRun.state).toBe('waiting_approval');
+
+    useChatStore.getState().noteApprovalSettled(true);
+    expect(useChatStore.getState().activeRun.state).toBe('running');
+  });
+
+  it('批次守门：非 waiting_approval 态下 allSettled=true 不误拉回 running', () => {
+    useChatStore.getState().applyRunStatus({ subject: 'run', phase: 'started', runId: 'run-1', createdAt: 't' });
+
+    useChatStore.getState().noteApprovalSettled(true);
+    expect(useChatStore.getState().activeRun.state).toBe('running');
   });
 
   it('error 即终态：收敛 idle 且保留 error（与 finished/stopped 同口径）', () => {

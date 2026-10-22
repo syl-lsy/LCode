@@ -9,7 +9,11 @@
 import { http, HttpResponse } from 'msw';
 
 import type {
+  ApprovalItem,
+  ApprovalPage,
   CostSummary,
+  DiffFileDetail,
+  DiffReviewDetail,
   ModelList,
   SandboxStatus,
   SessionCost,
@@ -125,6 +129,161 @@ export const sandboxStatusFixture: SandboxStatus = {
 
 export const SESSIONS_FIXTURE: readonly SessionDetail[] = [sessionA, sessionB, sessionC];
 
+/** 测试审批行（工厂：字段与契约 ApprovalItem 逐值对应，zod 形状同源）。 */
+export function makeApproval(overrides: Partial<ApprovalItem> = {}): ApprovalItem {
+  return {
+    id: 'aprv-1',
+    session_id: 'sess-1',
+    tool: 'execute',
+    args: { command: 'mkdir -p /root/obs-demo && ls -la /root/obs-demo' },
+    risk_level: 'high',
+    reason: '命中危险命令规则',
+    created_at: '2026-10-18T00:00:00+00:00',
+    status: 'pending',
+    ...overrides,
+  };
+}
+
+/** 挂起审批（sess-a 恢复场景默认挂两条：批次守门/多挂起测试共用）。 */
+export const pendingApprovalA = makeApproval({
+  id: 'aprv-a1',
+  session_id: 'sess-a',
+  tool: 'execute',
+  args: { command: 'rm -rf build/', timeout: 120 },
+  risk_level: 'high',
+  reason: '命中危险命令规则：rm -rf',
+});
+export const pendingApprovalB = makeApproval({
+  id: 'aprv-a2',
+  session_id: 'sess-a',
+  tool: 'write_file',
+  args: { path: 'hello.py', content: 'print(1)' },
+  risk_level: 'medium',
+  reason: '文件写入需要确认',
+});
+/** AUTO 分类器留痕行（auto_approved 形状来自契约 fixture 同构）。 */
+export const autoApprovedApproval = makeApproval({
+  id: 'aprv-auto',
+  session_id: 'sess-a',
+  tool: 'write_file',
+  args: { path: 'src/app.py', content: "print('hello')" },
+  risk_level: 'medium',
+  status: 'auto_approved',
+  decision: 'approve',
+  scope: 'once',
+  decided_at: '2026-10-18T00:00:00.200000+00:00',
+  reason: '分类器：常规非沙箱写操作，命中 AUTO 规则集（低风险路径）',
+});
+
+/** 全量审批表（GET /approvals 过滤的数据源；测试可 override）。 */
+export let APPROVALS_FIXTURE: ApprovalItem[] = [
+  pendingApprovalA,
+  pendingApprovalB,
+  autoApprovedApproval,
+];
+
+/** 测试内替换审批表（server.resetHandlers 后由 fixtures 基准重建）。 */
+export function setApprovalsFixture(items: readonly ApprovalItem[]): void {
+  APPROVALS_FIXTURE = [...items];
+}
+
+// ---------------------------------------------------------------- diff reviews
+
+/** GET …/files/{file_path} 的路由匹配正则（file_path 含 `/`，`:param` 单段通配不到）。 */
+export const DIFF_FILES_ROUTE = /files/;
+/** 从 pathname 解析 (reviewId, filePath) 的正则（handler 与测试共用）。 */
+const DIFF_FILE_PATH_RE = /\/api\/v1\/diff-reviews\/([^/]+)\/files\/(.+)$/;
+
+const PATCH_SAMPLE = [
+  'diff --git a/app.py b/app.py',
+  'index 64d908b..6912166 100644',
+  '--- a/app.py',
+  '+++ b/app.py',
+  '@@ -1,3 +1,4 @@',
+  ' import os',
+  '+import sys',
+  ' ',
+  ' def main():',
+  '-    pass',
+  '+    return 0',
+  '',
+].join('\n');
+
+/** 测试 diff 审查行（工厂：字段与契约 DiffReviewDetail 逐值对应，zod 形状同源）。 */
+export function makeDiffReview(overrides: Partial<DiffReviewDetail> = {}): DiffReviewDetail {
+  return {
+    id: '0192f0a1-6666-4a1a-9c2d-000000000006',
+    session_id: 'sess-1',
+    run_id: null,
+    round: 1,
+    verdict: 'pending',
+    baseline: {
+      kind: 'init',
+      ref: 'lcode-baseline/round-0',
+      commit: 'e83c5163316f89b8de6d78a1e58a28f6a3d1a1d0',
+    },
+    files: [
+      {
+        path: 'app.py',
+        old_path: null,
+        change: 'modified',
+        additions: 5,
+        deletions: 2,
+        binary: false,
+      },
+    ],
+    additions_total: 5,
+    deletions_total: 2,
+    feedback: null,
+    decided_by: null,
+    created_at: '2026-10-18T00:00:00+00:00',
+    resolved_at: null,
+    ...overrides,
+  };
+}
+
+/** 测试单文件 patch 详情（契约 DiffFileDetail）。 */
+export function makeDiffFile(overrides: Partial<DiffFileDetail> = {}): DiffFileDetail {
+  return {
+    path: 'app.py',
+    change: 'modified',
+    additions: 5,
+    deletions: 2,
+    binary: false,
+    patch: PATCH_SAMPLE,
+    blob_ref: null,
+    ...overrides,
+  };
+}
+
+/** 全量审查表（GET /diff-reviews 数据源；测试用 setDiffReviewsFixture 替换）。 */
+export let DIFF_REVIEWS_FIXTURE: DiffReviewDetail[] = [];
+
+export function setDiffReviewsFixture(items: readonly DiffReviewDetail[]): void {
+  DIFF_REVIEWS_FIXTURE = [...items];
+}
+
+/** 逐审查的文件详情表（GET …/files 数据源；键 = reviewId）。 */
+export let DIFF_FILES_FIXTURE: Readonly<Record<string, readonly DiffFileDetail[]>> = {};
+
+export function setDiffFilesFixture(reviewId: string, items: readonly DiffFileDetail[]): void {
+  DIFF_FILES_FIXTURE = { ...DIFF_FILES_FIXTURE, [reviewId]: items };
+}
+
+/** decision → 落库后 status（与 contracts rest.py ApprovalItem.status 对应）。 */
+type ApprovalDecision = NonNullable<ApprovalItem['decision']>;
+
+const DECIDE_STATUS: Record<ApprovalDecision, ApprovalItem['status']> = {
+  approve: 'approved',
+  edit: 'edited',
+  reject: 'rejected',
+  respond: 'responded',
+};
+
+function isApprovalDecision(value: unknown): value is ApprovalDecision {
+  return typeof value === 'string' && value in DECIDE_STATUS;
+}
+
 /** 契约成功/错误信封形状（供 handler 返回类型推断；错误信封无 data）。 */
 interface Envelope {
   code: string;
@@ -207,6 +366,104 @@ export const handlers = [
     return errorOf(422, 'PARAM_INVALID', 'dimension 必填');
   }),
   http.get('*/api/v1/sessions/:id/sandbox', () => ok(sandboxStatusFixture)),
+
+  // ---- approvals（M3 Phase 2：恢复挂起 + 四决策；响应形状符合契约 zod）----
+  http.get('*/api/v1/approvals', ({ request }) => {
+    const url = new URL(request.url);
+    const status = url.searchParams.get('status');
+    const sessionId = url.searchParams.get('session_id');
+    const items = APPROVALS_FIXTURE.filter(
+      (item) =>
+        (status === null || item.status === status) &&
+        (sessionId === null || item.session_id === sessionId),
+    );
+    const page: ApprovalPage = { items };
+    return ok(page);
+  }),
+  http.get('*/api/v1/approvals/:id', ({ params }) => {
+    const id = params['id'] as string;
+    const found = APPROVALS_FIXTURE.find((item) => item.id === id);
+    if (found === undefined) return errorOf(404, 'APPROVAL_NOT_FOUND', '审批不存在');
+    return ok(found);
+  }),
+  http.post('*/api/v1/approvals/:id/decide', async ({ request, params }) => {
+    const id = params['id'] as string;
+    const body = (await request.json().catch(() => ({}))) as {
+      decision?: string;
+      scope?: string | null;
+      edited_args?: Record<string, unknown> | null;
+      feedback?: string | null;
+    };
+    requestLog.push({ method: 'POST', url: request.url, body });
+    const found = APPROVALS_FIXTURE.find((item) => item.id === id);
+    if (found === undefined) return errorOf(404, 'APPROVAL_NOT_FOUND', '审批不存在');
+    if (found.status !== 'pending') {
+      return errorOf(409, 'APPROVAL_ALREADY_RESOLVED', '该审批已裁决');
+    }
+    if (!isApprovalDecision(body.decision)) {
+      return errorOf(422, 'PARAM_INVALID', 'decision 必须是 approve/edit/reject/respond');
+    }
+    // 就地落库（仅影响本测试进程的 fixture 副本），返回契约 ApprovalDecisionAck 形状
+    const decision = body.decision;
+    const decided: ApprovalItem = {
+      ...found,
+      status: DECIDE_STATUS[decision],
+      decision,
+      scope: (body.scope as ApprovalItem['scope'] | undefined) ?? 'once',
+      decided_at: '2026-10-18T00:00:10+00:00',
+    };
+    APPROVALS_FIXTURE = APPROVALS_FIXTURE.map((item) => (item.id === id ? decided : item));
+    return ok({ approval: decided, run_id: 'run-1' });
+  }),
+
+  // ---- diff reviews（M3 Phase 4：审查面板；响应形状符合契约 zod）----
+  // files 路由不能用 `:param`（file_path 含 `/`，单段通配匹配不到），改用正则 +
+  // handler 内自行从 pathname 解析（DIFF_FILES_ROUTE 供测试 override 复用）。
+  http.get('*/api/v1/diff-reviews/:id', ({ request, params }) => {
+    const id = params['id'] as string;
+    requestLog.push({ method: 'GET', url: request.url });
+    const found = DIFF_REVIEWS_FIXTURE.find((item) => item.id === id);
+    if (found === undefined) return errorOf(404, 'DIFF_REVIEW_NOT_FOUND', '差异审查不存在');
+    return ok(found);
+  }),
+  http.get(DIFF_FILES_ROUTE, ({ request }) => {
+    const match = DIFF_FILE_PATH_RE.exec(new URL(request.url).pathname);
+    requestLog.push({ method: 'GET', url: request.url });
+    if (match === null) return errorOf(404, 'NOT_FOUND', '路径不合法');
+    const reviewId = decodeURIComponent(match[1] ?? '');
+    const filePath = decodeURIComponent(match[2] ?? '');
+    const review = DIFF_REVIEWS_FIXTURE.find((item) => item.id === reviewId);
+    if (review === undefined) return errorOf(404, 'DIFF_REVIEW_NOT_FOUND', '差异审查不存在');
+    const found = (DIFF_FILES_FIXTURE[reviewId] ?? []).find((file) => file.path === filePath);
+    if (found === undefined) return errorOf(404, 'NOT_FOUND', '文件不在该轮 diff 中');
+    return ok(found);
+  }),
+  http.post('*/api/v1/diff-reviews/:id/verdict', async ({ request, params }) => {
+    const id = params['id'] as string;
+    const body = (await request.json().catch(() => ({}))) as {
+      verdict?: string;
+      feedback?: string | null;
+    };
+    requestLog.push({ method: 'POST', url: request.url, body });
+    const found = DIFF_REVIEWS_FIXTURE.find((item) => item.id === id);
+    if (found === undefined) return errorOf(404, 'DIFF_REVIEW_NOT_FOUND', '差异审查不存在');
+    if (found.verdict !== 'pending') {
+      return errorOf(409, 'DIFF_ALREADY_RESOLVED', '该差异审查已裁决');
+    }
+    if (body.verdict !== 'accepted' && body.verdict !== 'rejected') {
+      return errorOf(422, 'INVALID_ARGUMENT', 'verdict 必须是 accepted/rejected');
+    }
+    // 就地落库（仅影响本测试进程的 fixture 副本），返回契约 DiffReviewDetail 形状
+    const decided: DiffReviewDetail = {
+      ...found,
+      verdict: body.verdict,
+      feedback: body.verdict === 'rejected' ? (body.feedback ?? null) : null,
+      decided_by: 'user',
+      resolved_at: '2026-10-18T00:00:10+00:00',
+    };
+    DIFF_REVIEWS_FIXTURE = DIFF_REVIEWS_FIXTURE.map((item) => (item.id === id ? decided : item));
+    return ok(decided);
+  }),
 
   // SSE stub：App 壳冒烟用（空流立即关闭；流式行为测试一律 fake transport）。
   // msw v3 的 handler 返回面收敛了 HttpResponse 泛型——空体用 new HttpResponse(null)。

@@ -10,6 +10,7 @@ SQL 侧在 integration/test_rest_api.py 覆盖）。两个契约锚：
 
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from typing import Any, cast
 from uuid import uuid4
 
 import pytest
@@ -259,3 +260,26 @@ def test_aggregate_costs_rejects_unknown_dimension() -> None:
 def test_supported_dimensions_match_contract_enum() -> None:
     """三维口径与契约 CostSummary.dimension 的字面量一致（AC-015-2）。"""
     assert set(cost_service.SUPPORTED_DIMENSIONS) == {"session", "date", "model"}
+
+
+# ---------------------------------------------------------------- 落库失败隔离（AC-015-1）
+
+
+async def test_record_model_call_short_tx_swallows_factory_failure() -> None:
+    """计费落库失败不拖垮 run 收口：工厂构造异常也只记 warning（函数内兜底）。
+
+    run 收口调 `record_model_call_short_tx` 是「尽力而为」：run 终态事实已在收口事件
+    里成立，成本行写失败不得让 run 变 error。工厂获取也在 try 内（旧实现把
+    `session_factory or get_session_factory()` 放在 try 外，工厂抛错会穿透）。
+    """
+
+    class _BoomFactory:
+        def __call__(self) -> Any:
+            raise RuntimeError("session factory unavailable")
+
+    entry = ModelCallEntry(session_id=str(uuid4()), model="test-model")
+
+    # 不抛异常即通过（内部 BusinessLog.warning 记录）
+    await cost_service.record_model_call_short_tx(
+        entry, session_factory=cast("Any", _BoomFactory())
+    )

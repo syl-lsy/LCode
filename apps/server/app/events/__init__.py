@@ -55,7 +55,10 @@ from app.events.translator import (
     DEFAULT_SUBAGENT_ROLES,
     PROTOCOL_TASK_TOOL,
     PROTOCOL_WRITE_TODOS_TOOL,
+    ApprovalTarget,
     EventTranslator,
+    InFlightToolCall,
+    InterruptMappingError,
     ModelCallRecord,
 )
 
@@ -67,9 +70,12 @@ __all__ = [
     "DEFAULT_MAX_ATTEMPTS",
     "DEFAULT_RESULT_PREVIEW_LIMIT",
     "DEFAULT_SUBAGENT_ROLES",
+    "ApprovalTarget",
     "EventEmitError",
     "EventPipeline",
     "EventTranslator",
+    "InFlightToolCall",
+    "InterruptMappingError",
     "ModelCallRecord",
     "NonP0EventError",
     "PROTOCOL_TASK_TOOL",

@@ -8,8 +8,10 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 
-import { PANEL_WIDTH_MAX, PANEL_WIDTH_MIN, useWorkbenchStore } from '../store';
+import { PANEL_WIDTH_MAX, PANEL_WIDTH_MIN, useDiffStore, useWorkbenchStore } from '../store';
 import '../../../tests/test-utils';
+
+import { makeDiffFile, makeDiffReview, setDiffFilesFixture, setDiffReviewsFixture } from '../../../tests/msw-handlers';
 
 import { WorkbenchPanel } from './WorkbenchPanel';
 
@@ -120,5 +122,40 @@ describe('PanelTabs · 新增/切换/关闭标签', () => {
     // 关闭全部标签 → store 自动收起（closeTab 语义），面板回到宽度 0
     expect(useWorkbenchStore.getState().collapsed).toBe(true);
     expect(screen.getByTestId('workbench-panel')).toHaveAttribute('data-collapsed', 'true');
+  });
+});
+
+describe('审查标签（M3 Phase 4）：渲染真面板，不再是占位', () => {
+  it('review 标签激活时渲染 DiffReviewPanel（摘要条 + 文件列表 + 裁决区）', async () => {
+    // 种子：store 已有该 review（面板免 REST 回填）；fixture 备好文件详情（首个文件自动选中懒加载）
+    const review = makeDiffReview({ id: 'rev-w1', session_id: 'sess-a' });
+    useDiffStore.getState().upsertFromRest(review);
+    setDiffReviewsFixture([review]);
+    setDiffFilesFixture('rev-w1', [
+      makeDiffFile({
+        path: 'app.py',
+        patch: [
+          'diff --git a/app.py b/app.py',
+          'index 64d908b..6912166 100644',
+          '--- a/app.py',
+          '+++ b/app.py',
+          '@@ -1,2 +1,3 @@',
+          ' import os',
+          '+import sys',
+          ' ',
+        ].join('\n'),
+      }),
+    ]);
+
+    useWorkbenchStore.getState().setCollapsed(false);
+    useWorkbenchStore.getState().openReviewTab('rev-w1', '审查 · 第 1 轮');
+    render(<WorkbenchPanel />);
+
+    expect(screen.getByTestId('panel-tab')).toHaveTextContent('审查 · 第 1 轮');
+    expect(screen.getByTestId('diff-review-panel')).toBeInTheDocument();
+    expect(screen.getByTestId('diff-summary-bar')).toBeInTheDocument();
+    expect(screen.getByTestId('diff-verdict-form')).toBeInTheDocument();
+    // 不再是占位面板
+    expect(screen.queryByTestId('placeholder-pane')).not.toBeInTheDocument();
   });
 });

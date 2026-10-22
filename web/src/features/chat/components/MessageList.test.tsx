@@ -9,6 +9,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it } from 'vitest';
 
 import { useChatStore } from '../store';
+import { useTodoStore } from '@/features/todo/store';
 import { useWorkbenchStore } from '@/features/workbench/store';
 import '../../../tests/test-utils';
 
@@ -82,7 +83,7 @@ describe('MessageList · 渲染分发与折叠组', () => {
     expect(screen.getByTestId('timer-row')).toHaveTextContent('已工作');
   });
 
-  it('compact 状态行两态渲染（started 转圈 → finished 前后 token）', () => {
+  it('compact 状态行两态渲染（started 转圈 → finished k/M token 人读格式）', () => {
     useChatStore.getState().beginCompact({ id: 'c1', at: '2026-10-18T00:00:00+00:00' });
     const view = render(<MessageList sessionId={SESSION} />);
     expect(screen.getByTestId('compact-note')).toHaveAttribute('data-phase', 'started');
@@ -97,7 +98,81 @@ describe('MessageList · 渲染分发与折叠组', () => {
     view.rerender(<MessageList sessionId={SESSION} />);
     const note = screen.getByTestId('compact-note');
     expect(note).toHaveAttribute('data-phase', 'finished');
-    expect(note).toHaveTextContent('49,970 → 9,836 tokens');
+    expect(note).toHaveTextContent('约 50k → 9.8k tokens');
+  });
+
+  it('task 工具卡下方挂 SubagentCard（按 spawned_by_tool_call_id 关联计数）；非 task 卡不挂', () => {
+    useChatStore.getState().appendToolCard({
+      id: 'call_task_1',
+      tool: 'task',
+      args: { subagent_type: 'coder', description: '修超时' },
+      createdAt: '2026-10-18T00:00:00+00:00',
+    });
+    useChatStore.getState().completeToolCall({
+      id: 'call_task_1',
+      status: 'success',
+      durationMs: 800,
+      resultPreview: '已修复 timeout 配置',
+    });
+    useChatStore.getState().appendToolCard({
+      id: 'call_exec_1',
+      tool: 'execute',
+      args: { command: 'pytest' },
+      createdAt: '2026-10-18T00:00:01+00:00',
+    });
+    // 子智能体产生的两条事件（agent.spawned_by_tool_call_id 关联 task 卡）
+    useChatStore.getState().ensureAssistantMessage({
+      id: 'sub-msg-1',
+      createdAt: '2026-10-18T00:00:02+00:00',
+      runId: null,
+      agent: { agent_id: 'agent-xyz-1234', role: 'coder', spawned_by_tool_call_id: 'call_task_1' },
+    });
+    useChatStore.getState().appendToolCard({
+      id: 'sub-tool-1',
+      tool: 'write_file',
+      args: { path: 'a.py' },
+      createdAt: '2026-10-18T00:00:03+00:00',
+      agent: { agent_id: 'agent-xyz-1234', role: 'coder', spawned_by_tool_call_id: 'call_task_1' },
+    });
+
+    render(<MessageList sessionId={SESSION} />);
+
+    const subCards = screen.getAllByTestId('subagent-card');
+    expect(subCards).toHaveLength(1); // 只挂在 task 卡下
+    expect(subCards[0]).toHaveTextContent('coder');
+    expect(subCards[0]).toHaveTextContent('agent-xyz-…');
+    expect(subCards[0]).toHaveTextContent('1 条消息');
+    expect(subCards[0]).toHaveTextContent('1 次工具');
+    // 出参摘要透传（既有 result_preview 字段）
+    expect(screen.getByTestId('subagent-result')).toHaveTextContent('已修复 timeout 配置');
+    // task 卡 + 主流程 execute 卡 + 子智能体自己的 write_file 卡（子智能体事件本就
+    // 在流内按常规卡渲染；SubagentCard 是叠加的汇总区块，不取代它们）
+    expect(screen.getAllByTestId('tool-card')).toHaveLength(3);
+  });
+
+  it('todo 快照非空时面板出现在消息流区域；空快照不渲染（AC-005-3 挂载点集成）', () => {
+    const view = render(<MessageList sessionId={SESSION} />);
+    useChatStore.getState().appendToolCard({
+      id: 't1',
+      tool: 'execute',
+      args: { command: 'ls' },
+      createdAt: '2026-10-18T00:00:00+00:00',
+    });
+    view.rerender(<MessageList sessionId={SESSION} />);
+    expect(screen.queryByTestId('todo-panel')).not.toBeInTheDocument();
+
+    useTodoStore
+      .getState()
+      .setSnapshot(
+        [
+          { content: '克隆仓库', status: 'completed' },
+          { content: '跑测试', status: 'in_progress' },
+        ],
+        '2026-10-18T00:00:05+00:00',
+      );
+    view.rerender(<MessageList sessionId={SESSION} />);
+    expect(screen.getByTestId('todo-panel')).toBeInTheDocument();
+    expect(screen.getByTestId('todo-progress')).toHaveTextContent('1/2');
   });
 
   it('审批行终态：pending 提示 + 终态文案；diff 卡点击开右栏审查标签（workbench 编排 action）', async () => {

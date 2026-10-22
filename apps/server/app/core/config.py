@@ -14,6 +14,7 @@
 
 import os
 import re
+from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import model_validator
@@ -158,6 +159,7 @@ class SandboxSettings(BaseSettingsWithEnv):
     """
 
     provider: str = "bailian"  # SANDBOX_PROVIDER: bailian | opensandbox（AC-002-6）
+    workspace_dir: str = ""  # SANDBOX_WORKSPACE_DIR：diff 工作区覆盖（空 = 沙箱默认 cwd，D7）
     idle_pause_seconds: int = 600  # SANDBOX_IDLE_PAUSE_SECONDS：空闲多久显式 pause（AC-002-2）
     cost_rate_per_hour: float = 0.156  # SANDBOX_COST_RATE_PER_HOUR：running 单价（AC-015-4）
     paused_rate_per_gib_hour: float = 0.0021  # SANDBOX_PAUSED_RATE_PER_GIB_HOUR（AC-015-4）
@@ -203,6 +205,23 @@ class AgentSettings(BaseSettingsWithEnv):
 
     max_parallel_fanout: int = 8  # AGENT_MAX_PARALLEL_FANOUT：Send×N 并行上限（REQ-009 / NFR-005）
     run_timeout_s: int = 3600  # AGENT_RUN_TIMEOUT_S：单 run 墙钟超时
+    checkpointer: Literal["postgres", "memory"] = "postgres"  # AGENT_CHECKPOINTER
+    """断点恢复 saver 后端（REQ-004 约束④，m3-spikes §2）。
+
+    - `postgres`（默认）：lifespan 期建 `AsyncPostgresSaver`（跨进程/跨事件循环 resume，
+      审批 interrupt 恢复的部署口径）；
+    - `memory`：不建真库 saver（进程内 `InMemorySaver` 生效）——测试车道用，零副作用。
+    `LCODE_E2E_CHECKPOINTER` 仍是 e2e 的强制口（覆盖本配置，见 core/postgres_checkpointer）。
+    """
+
+    auto_approval_classifier: Literal["rules", "llm"] = "rules"  # AGENT_AUTO_APPROVAL_CLASSIFIER
+    """AUTO 审批分类器实现（REQ-013 AC-013-3）：rules=确定性规则（默认，零网络）/
+    llm=经济档 `approval_classifier` 角色。默认 rules 保证测试与无凭证环境零网络。
+    """
+
+    auto_approval_timeout_s: float = 8.0  # AGENT_AUTO_APPROVAL_TIMEOUT_S
+    """LLM 分类器单次决策的墙钟上限（秒）；超时即 fail-closed（转人工审批）。"""
+
     model_config = {"env_prefix": "AGENT_"}
 
 

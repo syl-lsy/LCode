@@ -1,8 +1,9 @@
 """unit 层：run 收口 → model_calls 逐次落库（AC-015-1；零库、零网络）。
 
 本文件只测 `RunService._finalize` 的记账编排：假 sink 提供 translator 记账快照，
-monkeypatch 掉短事务落行与 run 行收口，断言**收集到的 ModelCallEntry**。库侧行为
-（行落库/三维汇总）在 integration/test_rest_api.py 覆盖。
+monkeypatch 掉短事务落行、run 行收口与既往段落用量查询，断言**收集到的
+ModelCallEntry** 与终态 usage_totals。库侧行为（行落库/三维汇总）在
+integration/test_rest_api.py 覆盖。
 
 锁住的不变量：
 - 一次模型调用一行（translator 记录逐条映射）；
@@ -70,19 +71,25 @@ def _record(
 
 @dataclass
 class _FakeSink:
-    """假 sink：`finish` 只记序，`model_calls` 直出 translator 记账快照。"""
+    """假 sink：`finish` 记序并留存 usage_totals，`model_calls` 直出 translator 记账快照。"""
 
     records: tuple[ModelCallRecord, ...]
     order: list[str]
+    model_calls_recorded: bool = False
+    usage_totals: Usage | None = None
 
     async def finish(
         self, phase: str, *, error: Any = None, usage_totals: Usage | None = None
     ) -> None:
         self.order.append("finish")
+        self.usage_totals = usage_totals
 
     @property
     def model_calls(self) -> tuple[ModelCallRecord, ...]:
         return self.records
+
+    def mark_model_calls_recorded(self) -> None:
+        self.model_calls_recorded = True
 
 
 class _BoomRegistry:
@@ -102,8 +109,18 @@ def _service(registry: Any | None) -> RunService:
     )
 
 
-def _collect(monkeypatch: Any, order: list[str]) -> list[ModelCallEntry]:
+def _collect(
+    monkeypatch: Any, order: list[str], *, prior: Usage | None = None
+) -> list[ModelCallEntry]:
+    """收集本段落行；`prior` 注入「既往段落 token 合计」（缺省 0）。
+
+    `_prior_model_usage` 必须打桩：真实现会经 `get_session_factory()` 连库，而 unit
+    层要求零网络。放行它会把这台单测第一条 asyncpg 连接留在**本测事件循环**的连接池里，
+    后续 integration 复用进程级 engine 单例时跨 loop 取到旧连接（Future attached to a
+    different loop）。跨段合计语义用注入值验证，不靠真实查询。
+    """
     entries: list[ModelCallEntry] = []
+    prior_usage = prior if prior is not None else Usage()
 
     async def _record_entry(entry: ModelCallEntry, **_kwargs: Any) -> None:
         entries.append(entry)
@@ -112,8 +129,12 @@ def _collect(monkeypatch: Any, order: list[str]) -> list[ModelCallEntry]:
     async def _close_run_row(_self: Any, _run_id: str, _outcome: RunOutcome) -> None:
         order.append("run_row")
 
+    async def _prior(_self: Any, _run_id: str) -> Usage:
+        return prior_usage
+
     monkeypatch.setattr(run_service_module, "record_model_call_short_tx", _record_entry)
     monkeypatch.setattr(RunService, "_close_run_row", _close_run_row)
+    monkeypatch.setattr(RunService, "_prior_model_usage", _prior)
     return entries
 
 
@@ -255,6 +276,31 @@ async def test_finalize_normal_path_adds_no_reconciliation_row(monkeypatch: Any)
 
     assert len(entries) == 2
     assert all(entry.status == "success" for entry in entries)
+    # 终态事件 usage_totals = prior（缺省 0）+ 本段 usage
+    assert sink.usage_totals == Usage(input_tokens=30, output_tokens=12)
+
+
+async def test_finalize_usage_totals_adds_prior_segments(monkeypatch: Any) -> None:
+    """跨段合计：终态 usage_totals = 既往段落合计 + 本段 usage（resume 前的段落不少计）。
+
+    D4 单元级锁定：prior=(100, 50) + 本段 (10, 5) → sink.finish 收到 (110, 55)。
+    早先只有 integration 覆盖该语义，unit 层缺失会让「只算最后一段」的回归漏网。
+    """
+    order: list[str] = []
+    entries = _collect(monkeypatch, order, prior=Usage(input_tokens=100, output_tokens=50))
+    sink = _FakeSink(records=(_record(input_tokens=10, output_tokens=5),), order=order)
+    outcome = RunOutcome(
+        status="finished",
+        usage=Usage(input_tokens=10, output_tokens=5),
+        error=None,
+        duration_ms=1,
+    )
+
+    await _service(ModelRegistry.load())._finalize(_launch(), outcome, cast(Any, sink))
+
+    # prior 只进终态事件：本段逐次记账行不受既往段落影响（否则会重复计 token）
+    assert [(entry.input_tokens, entry.output_tokens) for entry in entries] == [(10, 5)]
+    assert sink.usage_totals == Usage(input_tokens=110, output_tokens=55)
 
 
 async def test_finalize_registry_failure_falls_back_to_launch_model(monkeypatch: Any) -> None:
@@ -283,3 +329,36 @@ async def test_finalize_registry_failure_falls_back_to_launch_model(monkeypatch:
         if record["level"].name == "WARNING" and record["extra"].get("entity") == "model"
     ]
     assert warnings, "注册表解析失败必须留 WARNING 日志"
+
+
+async def test_prior_model_usage_falls_back_to_zero_when_query_fails(
+    monkeypatch: Any,
+) -> None:
+    """既往用量查询失败 → 返回 0/0 且不抛出（fail-safe；零真库）。
+
+    `_prior_model_usage` 是跨段 `usage_totals` 的「既往」部分；统计查询失败绝不能让
+    终态事件丢失，因此按 0 记并留 WARNING。
+    """
+
+    def _boom() -> Any:
+        raise RuntimeError("session factory exploded")
+
+    monkeypatch.setattr(run_service_module, "get_session_factory", _boom)
+    service = _service(None)
+
+    captured: list[Any] = []
+    sink_id = logger.add(
+        lambda message: captured.append(message.record), format="{message}", level=0
+    )
+    try:
+        usage = await service._prior_model_usage(RUN_ID)
+    finally:
+        logger.remove(sink_id)
+
+    assert usage == Usage()
+    warnings = [
+        record
+        for record in captured
+        if record["level"].name == "WARNING" and record["extra"].get("entity") == "run"
+    ]
+    assert warnings, "查询失败回退必须留 WARNING 日志"

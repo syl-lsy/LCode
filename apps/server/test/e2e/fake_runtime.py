@@ -47,6 +47,10 @@ ROUTES: tuple[tuple[str, RouteBuilder, dict[str, Any]], ...] = (
     ("第一轮", scripts.multi_turn, {}),
     ("刚才", scripts.multi_turn, {}),
     ("成本", scripts.simple_reply, {}),
+    # M3 场景 A（顺序敏感）：三条路由键互不为子串，也不含上面的「第一轮/刚才/成本」等键。
+    ("场景A首轮", scripts.scenario_a_round_one, {}),
+    (scripts.SCENARIO_A_REWORK_KEYWORD, scripts.scenario_a_round_two, {}),
+    ("场景A收尾轮", scripts.scenario_a_round_three, {}),
 )
 DEFAULT_ROUTE: tuple[str, RouteBuilder, dict[str, Any]] = ("default", scripts.simple_reply, {})
 

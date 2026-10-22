@@ -4,6 +4,7 @@ import { Outlet, useNavigate, useParams } from 'react-router';
 import type { MessageSendAck } from '@contracts/rest';
 
 import { createSession, getSession } from '@/api/sessions';
+import { listApprovals } from '@/api/approvals';
 import { sendMessage } from '@/api/messages';
 import { ApiError } from '@/api/http';
 
@@ -22,6 +23,7 @@ import { EffortSelector } from '@/features/models/components/EffortSelector';
 import { ModelSelector } from '@/features/models/components/ModelSelector';
 import { useModelsStore } from '@/features/models/store';
 import { Sidebar } from '@/features/sessions/components/Sidebar';
+import { ApprovalModeMenu } from '@/features/sessions/components/ApprovalModeMenu';
 import { useSessionStore } from '@/features/sessions/store';
 import { useDiffStore, useTerminalStore, useWorkbenchStore } from '@/features/workbench/store';
 import { WorkbenchPanel } from '@/features/workbench/components/WorkbenchPanel';
@@ -105,6 +107,19 @@ export function SessionView() {
         setSeedError(true); // 网络等瞬态错误：如实提示，不静默
       });
 
+    // 挂起审批恢复（AC-006-5）：REST pending 列表合并进 approvalStore；与 SSE
+    // 重放的 approval_request 同 id 幂等（upsert 同键）。失败降级不阻塞会话
+    // （后端 approvals API 未就绪/瞬态错误时，SSE 重放仍可补齐挂起卡）。
+    listApprovals({ status: 'pending', sessionId })
+      .then((page) => {
+        if (cancelled) return;
+        if (page.items.length > 0) useApprovalStore.getState().upsertFromRest(page.items);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        console.warn('[approvals] 挂起审批恢复失败（不阻塞会话，等待 SSE 重放补齐）：', error);
+      });
+
     wireStream(sessionId);
     return () => {
       cancelled = true;
@@ -145,6 +160,7 @@ export function SessionView() {
             等待确认
           </span>
         )}
+        <ApprovalModeMenu sessionId={sessionId} />
       </header>
       {seedError && (
         <p role="alert" className="px-4 pt-2 text-[length:var(--text-ui-xs)] text-destructive">
@@ -215,6 +231,7 @@ export function HomeView() {
 
 export default function App() {
   const connState = useConnStore((s) => s.state);
+  const currentSessionId = useSessionStore((s) => s.currentId);
   const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
   const toggleSidebar = useUiStore((s) => s.toggleSidebar);
   const panelCollapsed = useWorkbenchStore((s) => s.collapsed);
@@ -267,7 +284,7 @@ export default function App() {
           </button>
         )}
       </main>
-      <WorkbenchPanel />
+      <WorkbenchPanel currentSessionId={currentSessionId} />
       <Toast state={toastState} onDismiss={() => setOfflineHidden(true)} />
       <button
         type="button"

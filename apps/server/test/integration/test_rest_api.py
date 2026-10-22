@@ -1055,9 +1055,12 @@ async def test_model_call_recorded_after_run(async_client, agent_env, db_session
 async def test_tool_loop_records_one_row_per_model_call(
     async_client, agent_env, db_session
 ) -> None:
-    """AC-015-1 逐次口径：工具循环 3 次模型调用 → 3 行；token 合计 = run 终态用量。"""
+    """AC-015-1 逐次口径：工具循环 3 次模型调用 → 3 行；token 合计 = run 终态用量。
+
+    M3 起写类工具要审批，本用例用只读工具循环（write_todos → ls）避免挂起。
+    """
     created = await _create(async_client, title="工具循环成本")
-    agent_env.set_model(ScriptedChatModel(steps=scripts.tool_loop_todo()))
+    agent_env.set_model(ScriptedChatModel(steps=scripts.tool_loop_read_only()))
     await _post_message(async_client, created.id, "跑一遍工具循环")
     await _wait_run_idle(async_client, created.id)
 
@@ -1068,7 +1071,7 @@ async def test_tool_loop_records_one_row_per_model_call(
             .order_by(ModelCall.created_at)
         )
     )
-    assert len(rows) == 3, "write_todos / write_file / 终答 = 三次模型调用"
+    assert len(rows) == 3, "write_todos / ls / 终答 = 三次模型调用"
     assert [row.role for row in rows] == ["main", "main", "main"]
     assert [row.agent_id for row in rows] == [None, None, None]
     assert [row.status for row in rows] == ["success", "success", "success"]

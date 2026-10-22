@@ -4,13 +4,20 @@
  * - `/` 空态首页：问候 + Composer（发送即建会话 → 导航到 /s/:id）；
  * - `/s/:sessionId` 深链：会话视图直开（种子 GET /sessions/{id} + 事件流连接；
  *   SSE 用 MSW 空流 stub，流式行为在 events/sse.test.ts 与 replay/* 覆盖）；
+ * - M3 Phase 2：挂起审批 REST 恢复（AC-006-5）+ 同 id 幂等 + 审批模式菜单挂载；
  * - 右面板默认收起 + 展开 rail；侧栏折叠入口；断线 toast（connStore → Toast）。
  */
 import { act, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { HttpResponse, http } from 'msw';
 import { describe, expect, it } from 'vitest';
 
-import { renderAtRoute } from './tests/test-utils';
+import { ApprovalRequestEventSchema } from '@contracts/events';
+
+import { renderAtRoute, server } from './tests/test-utils';
+import { useApprovalStore } from './features/approval/store';
+import { pendingApprovalA, pendingApprovalB } from './tests/msw-handlers';
+import { HANDLERS } from './events/handlers';
 import { useChatStore } from './features/chat/store';
 import { useConnStore } from './stores/connStore';
 import { useSessionStore } from './features/sessions/store';
@@ -149,5 +156,88 @@ describe('AppShell · 路由与三栏（任务 #2）', () => {
     renderAtRoute('/');
     useWorkbenchStore.getState().setWidth(420);
     expect(localStorage.getItem('lcode.panel.width')).toBe('420');
+  });
+});
+
+describe('AppShell · 挂起审批恢复与审批模式（M3 Phase 2）', () => {
+  /** 构造一条 approval_request SSE 事件（等价首连重放投递）。 */
+  function replayApprovalRequest(
+    approval: typeof pendingApprovalA,
+    toolCallId: string,
+    seq: number,
+  ): void {
+    const event = ApprovalRequestEventSchema.parse({
+      seq,
+      session_id: approval.session_id,
+      run_id: 'run-replay',
+      created_at: approval.created_at,
+      type: 'approval_request',
+      approval_id: approval.id,
+      tool_call_id: toolCallId,
+      tool: approval.tool,
+      args: approval.args,
+      risk_level: approval.risk_level,
+      reason: approval.reason ?? null,
+    });
+    act(() => {
+      HANDLERS.approval_request(event);
+    });
+  }
+
+  it('刷新恢复：REST pending 合并入 store，SSE 重放后挂起卡带完整载荷与决策表单（AC-006-5）', async () => {
+    renderAtRoute('/s/sess-a');
+    await waitFor(() => {
+      expect(useApprovalStore.getState().pendingIds).toEqual(['aprv-a1', 'aprv-a2']);
+    });
+
+    // SSE 首连重放：approval_request 重建流内卡片（生产语义：事件表重放）
+    replayApprovalRequest(pendingApprovalA, 'call_replay_1', 901);
+    replayApprovalRequest(pendingApprovalB, 'call_replay_2', 902);
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId('approval-row')).toHaveLength(2);
+    });
+    const first = screen.getAllByTestId('approval-row')[0];
+    expect(first).toHaveAttribute('data-status', 'pending');
+    // args 原文完整可见（REST 载荷与 SSE 事件同 id 合并）+ 决策表单就绪
+    expect(screen.getAllByTestId('approval-args')[0]).toHaveTextContent('rm -rf build/');
+    expect(screen.getAllByTestId('decision-form')).toHaveLength(2);
+    // 同 id 幂等：重放不重复入列
+    expect(useApprovalStore.getState().pendingIds).toEqual(['aprv-a1', 'aprv-a2']);
+    expect(useApprovalStore.getState().byId.size).toBe(2);
+  });
+
+  it('恢复幂等：REST 已恢复的挂起卡，SSE 重放同 id approval_request 不重复入列', async () => {
+    renderAtRoute('/s/sess-a');
+    await waitFor(() => {
+      expect(useApprovalStore.getState().pendingIds).toEqual(['aprv-a1', 'aprv-a2']);
+    });
+
+    replayApprovalRequest(pendingApprovalA, 'call_replay', 910);
+
+    expect(useApprovalStore.getState().pendingIds).toEqual(['aprv-a1', 'aprv-a2']);
+    expect(useApprovalStore.getState().byId.size).toBe(2);
+  });
+
+  it('恢复失败降级：approvals 接口 5xx 不阻塞会话（会话视图照常可用）', async () => {
+    server.use(
+      http.get('*/api/v1/approvals', () =>
+        HttpResponse.json({ code: 'INTERNAL_ERROR', message: 'boom' }, { status: 500 }),
+      ),
+    );
+    renderAtRoute('/s/sess-a');
+    await waitFor(() => expect(screen.getByTestId('session-header')).toBeInTheDocument());
+    await waitFor(() => expect(useApprovalStore.getState().pendingIds).toEqual([]));
+    // 会话本体仍可用：输入区 + 消息流在位
+    expect(screen.getByTestId('composer')).toBeInTheDocument();
+    expect(screen.getByTestId('message-scroll')).toBeInTheDocument();
+  });
+
+  it('审批模式菜单挂载在会话头部（AC-013-3/4）', async () => {
+    renderAtRoute('/s/sess-a');
+    await waitFor(() => expect(screen.getByTestId('session-header')).toBeInTheDocument());
+    expect(screen.getByTestId('approval-mode-menu')).toBeInTheDocument();
+    await userEvent.setup().click(screen.getByTestId('approval-mode-menu'));
+    expect(screen.getByText('沙箱内命令执行/文件写入始终需要人工审批，AUTO 不会放行它们')).toBeInTheDocument();
   });
 });

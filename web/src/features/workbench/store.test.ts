@@ -17,6 +17,8 @@ import {
 } from './store';
 import type { DiffFileDetail, DiffReviewDetail } from '@contracts/rest';
 
+import { makeDiffReview } from '../../tests/msw-handlers';
+
 const READY = {
   reviewId: 'rev-1',
   sessionId: 's1',
@@ -157,5 +159,161 @@ describe('terminalStore：exec 回显 / 生命周期', () => {
     useTerminalStore.getState().setLifecycle({ phase: 'paused', at: 't2', provider: 'bailian', reason: '空闲' });
     expect(useTerminalStore.getState().lifecycle).toMatchObject({ phase: 'paused', reason: '空闲' });
     expect(useTerminalStore.getState().sandboxId).toBe('sbx_1'); // 未带 sandboxId 时不覆盖
+  });
+});
+
+// ---------------------------------------------------------------- M3 Phase 4 增量
+
+describe('workbenchStore.openReviewTab（diff_ready 自动开标签语义）', () => {
+  it('不存在时：新开 review 标签、激活并展开面板', () => {
+    useWorkbenchStore.getState().setCollapsed(true);
+
+    useWorkbenchStore.getState().openReviewTab('rev-1', '审查 · 第 1 轮');
+
+    const state = useWorkbenchStore.getState();
+    expect(state.tabs).toEqual([
+      { id: tabIdOf('review', 'rev-1'), kind: 'review', title: '审查 · 第 1 轮' },
+    ]);
+    expect(state.activeTabId).toBe(tabIdOf('review', 'rev-1'));
+    expect(state.collapsed).toBe(false);
+  });
+
+  it('已存在时：只同步标题，不重复开、不抢激活焦点、不强行展开', () => {
+    useWorkbenchStore.getState().openReviewTab('rev-1', '审查 · 第 1 轮');
+    // 用户切走并收起面板
+    useWorkbenchStore.getState().openTab({ kind: 'terminal', id: 'main', title: '终端' });
+    useWorkbenchStore.getState().setCollapsed(true);
+
+    useWorkbenchStore.getState().openReviewTab('rev-1', '审查 · 第 2 轮');
+
+    const state = useWorkbenchStore.getState();
+    expect(state.tabs.filter((tab) => tab.id === tabIdOf('review', 'rev-1'))).toHaveLength(1);
+    expect(state.activeTabId).toBe(tabIdOf('terminal', 'main'));
+    expect(state.collapsed).toBe(true);
+    expect(state.tabs.find((tab) => tab.id === tabIdOf('review', 'rev-1'))?.title).toBe(
+      '审查 · 第 2 轮',
+    );
+  });
+});
+
+describe('diffStore.upsertFromRest（刷新恢复回填，终态不回退）', () => {
+  it('store 无该 review：REST 全量回填（patchRef 按端点惯例合成）', () => {
+    const detail = makeDiffReview({ id: 'rev-1', session_id: 'sess-a', verdict: 'pending' });
+
+    useDiffStore.getState().upsertFromRest(detail);
+
+    expect(useDiffStore.getState().reviews.get('rev-1')).toMatchObject({
+      id: 'rev-1',
+      sessionId: 'sess-a',
+      round: detail.round,
+      verdict: 'pending',
+      feedback: null,
+      decidedBy: null,
+      patchRef: '/api/v1/diff-reviews/rev-1',
+    });
+  });
+
+  it('本地终态 + REST 仍报 pending（陈旧快照）→ 终态不回退，patch 缓存保留', () => {
+    useDiffStore.getState().upsertFromRest(makeDiffReview({ id: 'rev-1', verdict: 'pending' }));
+    useDiffStore.getState().applyVerdict({
+      reviewId: 'rev-1',
+      verdict: 'accepted',
+      feedback: null,
+      decidedBy: 'user',
+    });
+    useDiffStore.getState().cachePatch('rev-1', {
+      path: 'app.py',
+      change: 'modified',
+      additions: 1,
+      deletions: 0,
+      binary: false,
+      patch: 'cached-patch',
+      blob_ref: null,
+    });
+
+    useDiffStore.getState().upsertFromRest(makeDiffReview({ id: 'rev-1', verdict: 'pending' }));
+
+    const review = useDiffStore.getState().reviews.get('rev-1');
+    expect(review).toMatchObject({ verdict: 'accepted', decidedBy: 'user' });
+    expect(review?.patches.get('app.py')?.patch).toBe('cached-patch');
+  });
+
+  it('本地 pending + REST 终态（错过 diff_resolved）→ 以 REST 为准', () => {
+    useDiffStore.getState().upsertFromRest(makeDiffReview({ id: 'rev-1', verdict: 'pending' }));
+
+    useDiffStore.getState().upsertFromRest(
+      makeDiffReview({
+        id: 'rev-1',
+        verdict: 'rejected',
+        feedback: '请补充测试',
+        decided_by: 'user',
+        resolved_at: '2026-10-18T00:00:10+00:00',
+      }),
+    );
+
+    expect(useDiffStore.getState().reviews.get('rev-1')).toMatchObject({
+      verdict: 'rejected',
+      feedback: '请补充测试',
+      decidedBy: 'user',
+    });
+  });
+});
+
+describe('diffStore.applyVerdict（feedback 单调合并，系统注记不被冲掉）', () => {
+  const NOTE = '[系统] 返工未自动启动：会话已有运行中的任务。';
+
+  it('回声（无注记）先到、响应（含注记）后到 → 注记保留', () => {
+    useDiffStore.getState().upsertFromRest(makeDiffReview({ id: 'rev-1', verdict: 'pending' }));
+
+    useDiffStore.getState().applyVerdict({
+      reviewId: 'rev-1',
+      verdict: 'rejected',
+      feedback: '请补充测试',
+      decidedBy: 'user',
+    });
+    useDiffStore.getState().applyVerdict({
+      reviewId: 'rev-1',
+      verdict: 'rejected',
+      feedback: `请补充测试\n\n${NOTE}`,
+      decidedBy: 'user',
+    });
+
+    expect(useDiffStore.getState().reviews.get('rev-1')?.feedback).toContain(NOTE);
+  });
+
+  it('响应（含注记）先到、回声（无注记）后到 → 注记仍保留', () => {
+    useDiffStore.getState().upsertFromRest(makeDiffReview({ id: 'rev-1', verdict: 'pending' }));
+    useDiffStore.getState().applyVerdict({
+      reviewId: 'rev-1',
+      verdict: 'rejected',
+      feedback: `请补充测试\n\n${NOTE}`,
+      decidedBy: 'user',
+    });
+
+    useDiffStore.getState().applyVerdict({
+      reviewId: 'rev-1',
+      verdict: 'rejected',
+      feedback: '请补充测试',
+      decidedBy: 'user',
+    });
+
+    expect(useDiffStore.getState().reviews.get('rev-1')?.feedback).toContain(NOTE);
+  });
+
+  it('accepted（feedback 为 null）不被合并逻辑污染', () => {
+    useDiffStore.getState().upsertFromRest(makeDiffReview({ id: 'rev-1', verdict: 'pending' }));
+
+    useDiffStore.getState().applyVerdict({
+      reviewId: 'rev-1',
+      verdict: 'accepted',
+      feedback: null,
+      decidedBy: 'user',
+    });
+
+    expect(useDiffStore.getState().reviews.get('rev-1')).toMatchObject({
+      verdict: 'accepted',
+      feedback: null,
+      decidedBy: 'user',
+    });
   });
 });

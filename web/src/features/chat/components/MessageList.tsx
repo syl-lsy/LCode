@@ -1,13 +1,24 @@
 import { Fragment, useMemo, useState } from 'react';
 
 import { useChatStore, type ChatItem, type ChatToolCardItem } from '../store';
+import { useTodoStore } from '@/features/todo/store';
+import { TodoPanel } from '@/features/todo/components/TodoPanel';
 import { useWorkbenchStore } from '@/features/workbench/store';
+import { formatTokens } from '@/lib/formatTokens';
+// 容器例外（A4 §2.2 唯一）：chat 容器可 import 各领域卡片组件
+import { ApprovalCard } from '@/features/approval/components/ApprovalCard';
 
 import { useAutoFollow, useStickToBottom } from '../hooks/useStickToBottom';
 
 import { EmptyState } from '@/components/EmptyState';
 
 import { MessageBubble } from './MessageBubble';
+import {
+  SubagentCard,
+  agentOf,
+  collectSubagentActivity,
+  type SubagentActivity,
+} from './SubagentCard';
 import { TimerRow } from './TimerRow';
 import { ToolCard } from './ToolCard';
 
@@ -15,9 +26,12 @@ import { ToolCard } from './ToolCard';
  * 消息流容器（A4 §8.1 MessageList 行 / §8.2 items 渲染模型）。
  *
  * - items 顺序表按 kind 分发：message → MessageBubble；toolcard → 连续段收敛进
- *   TimerRow 总折叠区（F3：收起时思考卡+工具卡藏入该行，行文案不变）；
- *   approval/diffcard/compact_note → 就地行渲染（M2 形态；approval/diff 完整卡片
- *   在 M3 接 ApprovalCard/DiffReadyCard 后替换）；
+ *   TimerRow 总折叠区（F3：收起时思考卡+工具卡藏入该行，行文案不变），task 卡
+ *   下方挂 SubagentCard 扩展区块（REQ-016）；approval → ApprovalCard（M3：四决策
+ *   卡片 + 终态折叠；载荷按 id 取自 approvalStore）；diffcard/compact_note → 就地行
+ *   渲染（compact 数值 k/M 人读格式，AC-010-1）；
+ * - TodoPanel 悬浮于流区域右上（对齐 zcode-ui 12-todo-panel.png，非独立右栏 tab），
+ *   空快照由组件自身零渲染（AC-005-3）；
  * - 贴底四件套（§6.4）：唯一滚动入口 follow()；脱离显示「回到底部 ↓N」FAB；
  * - diffcard 点击 → workbenchStore.openTab（UI 编排 action，A4 §2.2 唯一例外）。
  */
@@ -63,33 +77,6 @@ export function groupItems(items: readonly ChatItem[]): RenderGroup[] {
   return groups;
 }
 
-function ApprovalRow({ item }: { item: Extract<ChatItem, { kind: 'approval' }> }) {
-  const statusLabel =
-    item.status === 'pending'
-      ? '等待确认'
-      : item.status === 'approved'
-        ? '已允许'
-        : item.status === 'rejected'
-          ? '已拒绝'
-          : item.status === 'edited'
-            ? '已编辑后允许'
-            : '已回复';
-  return (
-    <div
-      data-testid="approval-row"
-      data-status={item.status}
-      className={`mb-2.5 rounded-md border px-3 py-2 text-[length:var(--text-ui-xs)] ${
-        item.status === 'pending'
-          ? 'border-accent-border bg-accent text-accent-foreground'
-          : 'border-border bg-card text-foreground-subtle'
-      }`}
-    >
-      权限审批 · <span className="font-mono">{item.tool}</span> · {statusLabel}
-      {item.status === 'pending' && '（M3 接入完整四决策卡片）'}
-    </div>
-  );
-}
-
 function DiffCardRow({ item }: { item: Extract<ChatItem, { kind: 'diffcard' }> }) {
   const openTab = useWorkbenchStore((s) => s.openTab);
   return (
@@ -127,17 +114,23 @@ function CompactNoteRow({ item }: { item: Extract<ChatItem, { kind: 'compact_not
           ✓
         </span>
       )}
-      {item.phase === 'started' ? '正在压缩上下文' : '上下文已压缩'}
+      {item.phase === 'started' ? '正在压缩上下文…' : '上下文已压缩'}
       {item.phase === 'finished' && item.beforeTokens !== null && item.afterTokens !== null && (
         <span className="ml-auto text-[length:var(--text-ui-2xs)] text-foreground-subtlest">
-          {item.beforeTokens.toLocaleString()} → {item.afterTokens.toLocaleString()} tokens
+          约 {formatTokens(item.beforeTokens)} → {formatTokens(item.afterTokens)} tokens
         </span>
       )}
     </div>
   );
 }
 
-function ToolGroupBlock({ group }: { group: ToolGroup }) {
+function ToolGroupBlock({
+  group,
+  activities,
+}: {
+  group: ToolGroup;
+  activities: ReadonlyMap<string, SubagentActivity>;
+}) {
   const [collapsed, setCollapsed] = useState(false);
   const running = group.cards.some((card) => card.status === 'running');
   if (collapsed) {
@@ -156,7 +149,13 @@ function ToolGroupBlock({ group }: { group: ToolGroup }) {
         onToggle={() => setCollapsed(true)}
       />
       {group.cards.map((card) => (
-        <ToolCard key={card.id} item={card} />
+        <Fragment key={card.id}>
+          <ToolCard item={card} />
+          {/* task 卡的子智能体扩展区块（REQ-016）：挂在卡下，不改 ToolCard 布局 */}
+          {card.tool === 'task' && (
+            <SubagentCard item={card} activity={activities.get(card.id) ?? null} />
+          )}
+        </Fragment>
       ))}
     </div>
   );
@@ -186,8 +185,42 @@ export function MessageList({ sessionId }: MessageListProps) {
 
   const groups = useMemo(() => groupItems(resolved), [resolved]);
 
+  // 子智能体活动索引（REQ-016）：对整条流一次 O(n) 聚合，task 卡按 id 取用——
+  // 避免每张 task 卡各自遍历（子智能体事件量大时的渲染成本控制）。
+  const subagentActivities = useMemo(() => {
+    const map = new Map<string, SubagentActivity>();
+    for (const item of resolved) {
+      const agent = agentOf(item);
+      const spawnedBy = agent?.spawned_by_tool_call_id;
+      if (spawnedBy === null || spawnedBy === undefined) continue;
+      const current = map.get(spawnedBy);
+      const next = collectSubagentActivity([item], spawnedBy);
+      if (next === null) continue;
+      if (current === undefined) {
+        map.set(spawnedBy, next);
+        continue;
+      }
+      map.set(spawnedBy, {
+        agentId: current.agentId ?? next.agentId,
+        role: current.role ?? next.role,
+        messageCount: current.messageCount + next.messageCount,
+        toolCount: current.toolCount + next.toolCount,
+        running: current.running || next.running,
+        lastTool: next.lastTool ?? current.lastTool,
+      });
+    }
+    return map;
+  }, [resolved]);
+
+  const hasTodos = useTodoStore((s) => s.snapshot.length > 0);
+
   return (
     <div className="relative min-h-0 flex-1">
+      {hasTodos && (
+        <div className="absolute right-5 top-3 z-10">
+          <TodoPanel />
+        </div>
+      )}
       <div
         ref={stick.containerRef}
         onScroll={stick.onScroll}
@@ -205,11 +238,17 @@ export function MessageList({ sessionId }: MessageListProps) {
           <div className="mx-auto max-w-[760px] px-5 pt-4 pb-2">
             {groups.map((group) =>
               group.kind === 'tools' ? (
-                <ToolGroupBlock key={group.key} group={group} />
+                <ToolGroupBlock key={group.key} group={group} activities={subagentActivities} />
               ) : (
                 <Fragment key={group.key}>
                   {group.item.kind === 'message' && <MessageBubble item={group.item} />}
-                  {group.item.kind === 'approval' && <ApprovalRow item={group.item} />}
+                  {group.item.kind === 'approval' && (
+                    <ApprovalCard
+                      approvalId={group.item.id}
+                      tool={group.item.tool}
+                      fallbackStatus={group.item.status}
+                    />
+                  )}
                   {group.item.kind === 'diffcard' && <DiffCardRow item={group.item} />}
                   {group.item.kind === 'compact_note' && <CompactNoteRow item={group.item} />}
                   {group.item.kind === 'subagent' && (
