@@ -11,9 +11,13 @@ ZCode 风格的交互式 Coding Agent，个人自用生产力工具——聊天�
 
 ## 当前状态
 
-**M1 完成**（tag `m1-done`）：`contracts/` 契约冻结 v1（五域 + 109 用例自校验 harness + TS/zod 生成管线，经用户评审通过）；双端脚手架就位（`apps/server` 99 用例 / `web/` 22 用例）；根质量门禁全绿——`make ci`（后端契约 + lint + 测试与覆盖率门禁 + e2e，前端 frozen install + lint + tsc + vitest + build）。GitHub Actions CI 已配置，待首次 push 后验证。
+**M1 完成**（tag `m1-done`）：`contracts/` 契约冻结 v1（五域 + 109 用例自校验 harness + TS/zod 生成管线，经用户评审通过）；双端脚手架就位（`apps/server` 99 用例 / `web/` 22 用例）；根质量门禁全绿——`make ci`（后端契约 + lint + 测试与覆盖率门禁 + e2e，前端 frozen install + lint + tsc + vitest + build）。
 
-**下一步 M2**：聊天 + 沙箱闭环（REQ-001/002/003/004/014/015）。
+**M2 完成**（tag `m2-done`，基线提交 `32c3ad1`）：十表 ORM 与迁移、沙箱双适配器（百炼 / OpenSandbox）、deepagents 装配、SSE 端点与事件协议、成本追踪、聊天与终端 UI。
+
+**M3 完成**（tag `m3-done`，提交 `831b5dd` 已在 `main` 并推送，CI backend + frontend 双 job 绿）：审批（HITL 四决策与 resume）、AUTO 分类器与沙箱红线、diff 基线链与审查面板、todo / 子智能体 / compact 事件、场景 A 全链路 e2e 与「0 绕审」不变量。23 条验收标准达成 19 / 部分 4 / 未做 0（部分项为 SDK 能力或产品口径取舍，见收口台账 `docs/arch/m3-closure-checklist.md`）。
+
+**下一步 M4**：扇出（map-reduce）+ Web 工具接入；入口条件见收口台账 §8（先统一并行扇出下的用量对账基准）。
 
 ## 目录导览
 
