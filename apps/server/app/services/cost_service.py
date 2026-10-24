@@ -3,11 +3,12 @@
 职责与口径：
 
 - **model_calls 记录**（AC-015-1）：**每次模型调用落一行**（100% 落库，含失败行
-  `status=error + error_type`；失败行只带残差 token，与成功行合计等于 run 总量）。
+  `status=error + error_type`——失败行是审计标记，同源对账基准下残差为 0）。
   **思考 token 计入 output_tokens**（PRD 硬约束 9）——网关的
   `usage_metadata.output_tokens` 已含 reasoning token，本层原样保留、不二次叠加；
   记录粒度 = translator 的逐次调用记账（`ModelCallRecord`）：每收口一条 assistant
-  消息落一行，已完成调用不重复计，收口时未被记账的用量由对账行补齐。
+  消息落一行，已完成调用不重复计；行集 token 合计与终态 `usage_totals` 同源
+  （M4 前置 D5：残差基准 = `translator.usage_totals`，不再取 runtime 单窗口）。
 - **三维汇总**（AC-015-2）：`session`（group_key=会话 id）/ `date`（YYYY-MM-DD，UTC）/
   `model`（模型 id）——`model_calls` 行数、token 分项求和、费用求和；行序 = cost 降序、
   同额按 group_key 定序（确定性，测试可复现）。
@@ -258,7 +259,7 @@ def aggregate_costs(rows: Sequence[_AggregateRow], dimension: str) -> CostSummar
     """行集合 → 三维 `CostSummary`（纯函数；SQL 侧行集由 CostService.summary 提供）。
 
     行序 = cost 降序、同额按 group_key 升序（确定性）；`model_calls` 计**行数**
-    （100% 落库口径，含失败行——失败行只带残差 token，与成功行合计等于 run 总量）。
+    （100% 落库口径，含失败行——失败行是同源基准下的 0 残差审计标记）。
     """
     buckets: dict[str, dict[str, Any]] = {}
     for row in rows:

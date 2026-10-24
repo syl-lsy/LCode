@@ -65,6 +65,12 @@ class RunLaunch:
     provider: str
     approval_mode: str = "manual"
     user_id: str = "local"
+    persisted_sandbox_id: str | None = None
+    """sessions.sandbox_id 的持久值（上一进程生命周期留下的沙箱 id；健壮性接线）。
+
+    随 run 路径下发到 `SandboxManager.ensure`，供其按持久 id adopt 已有沙箱——
+    adopt 逻辑属下一任务接线，本字段先作为快照随行。
+    """
 
 
 RunStarter = Callable[[RunLaunch], None]
@@ -142,6 +148,7 @@ class MessageService(BaseService):
                     provider=session_row.sandbox_provider,
                     approval_mode=session_row.approval_mode,
                     user_id=session_row.user_id,
+                    persisted_sandbox_id=session_row.sandbox_id,
                 )
             )
 

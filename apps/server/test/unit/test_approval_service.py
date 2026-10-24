@@ -101,6 +101,18 @@ class FakeSession:
         raise AssertionError("单测不应执行真实查询（请注入行集合替身）")
 
 
+class _StatementCapturingSession(FakeSession):
+    """记录 `scalars` 语句并返回空结果（只断言 SQL 里的归属条件，不执行真实查询）。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.scalars_statements: list[Any] = []
+
+    async def scalars(self, statement: Any) -> list[Any]:
+        self.scalars_statements.append(statement)
+        return []
+
+
 class FakeSessionFactory:
     """async_sessionmaker 替身：`async with factory() as session` 返回同一个 FakeSession。"""
 
@@ -167,6 +179,7 @@ class FlakyPipeline(FakePipeline):
 def _approval(
     *,
     approval_id: uuid.UUID | None = None,
+    user_id: str = "local",
     tool: str = "execute",
     tool_call_id: str = "call-1",
     status: str = "pending",
@@ -176,7 +189,7 @@ def _approval(
 ) -> Approval:
     row = Approval(
         id=approval_id or uuid.uuid4(),
-        user_id="local",
+        user_id=user_id,
         session_id=SESSION_ID,
         run_id=run_id,
         tool_call_id=tool_call_id,
@@ -192,21 +205,21 @@ def _approval(
     return row
 
 
-def _run_row(status: str = "waiting_approval") -> RunRow:
+def _run_row(status: str = "waiting_approval", *, user_id: str = "local") -> RunRow:
     return RunRow(
         id=RUN_ID,
-        user_id="local",
+        user_id=user_id,
         session_id=SESSION_ID,
         status=status,
         started_at=datetime(2026, 10, 21, 12, 0, 0, tzinfo=UTC),
     )
 
 
-def _session_row(*, approval_mode: str = "manual") -> Session:
-    """会话行替身（`scope=session` 升级 / 反例不变量的断言对象）。"""
+def _session_row(*, approval_mode: str = "manual", user_id: str = "local") -> Session:
+    """会话行替身（`scope=session` 升级 / 归属校验的断言对象）。"""
     return Session(
         id=SESSION_ID,
-        user_id="local",
+        user_id=user_id,
         title="t",
         status="active",
         model="m",
@@ -223,13 +236,14 @@ def _service(
     rows: list[Approval],
     *,
     run_status: str = "waiting_approval",
+    run_user_id: str = "local",
     session_row: Session | None = None,
     factory: FakeSessionFactory | None = None,
 ) -> tuple[ApprovalService, FakeSession, FakePipeline, ResumeRecorder]:
     session = factory.session if factory is not None else FakeSession()
     # 短事务出口（scope=session 的会话升级）也必须走替身：单测零真实库访问
     factory = factory if factory is not None else FakeSessionFactory(session)
-    session.rows[(RunRow, RUN_ID)] = _run_row(run_status)
+    session.rows[(RunRow, RUN_ID)] = _run_row(run_status, user_id=run_user_id)
     if session_row is not None:
         session.rows[(Session, SESSION_ID)] = session_row
     for row in rows:  # 审批行按主键可 get（decide/close 的入口查询）
@@ -293,7 +307,9 @@ async def test_approve_marks_row_and_emits_after_commit() -> None:
     row = _approval()
     service, session, pipeline, recorder = _service([row])
 
-    item, run_id = await service.decide(str(row.id), ApprovalDecisionRequest(decision="approve"))
+    item, run_id = await service.decide(
+        str(row.id), ApprovalDecisionRequest(decision="approve"), user_id="local"
+    )
 
     assert item.status == "approved"
     assert item.decision == "approve"
@@ -324,7 +340,7 @@ async def test_decide_emit_failure_still_starts_resume() -> None:
     )
     try:
         item, run_id = await service.decide(
-            str(row.id), ApprovalDecisionRequest(decision="approve")
+            str(row.id), ApprovalDecisionRequest(decision="approve"), user_id="local"
         )
     finally:
         logger.remove(sink_id)
@@ -362,7 +378,9 @@ async def test_upgrade_session_scope_failure_does_not_block_decision() -> None:
     )
     try:
         item, run_id = await service.decide(
-            str(row.id), ApprovalDecisionRequest(decision="approve", scope="session")
+            str(row.id),
+            ApprovalDecisionRequest(decision="approve", scope="session"),
+            user_id="local",
         )
     finally:
         logger.remove(sink_id)
@@ -391,12 +409,15 @@ async def test_resume_waits_for_all_pending_and_orders_decisions() -> None:
     )
     service, _session, _pipeline, recorder = _service([first, second])
 
-    await service.decide(str(first.id), ApprovalDecisionRequest(decision="approve"))
+    await service.decide(
+        str(first.id), ApprovalDecisionRequest(decision="approve"), user_id="local"
+    )
     assert recorder.calls == []  # 还有 pending，不 resume
 
     await service.decide(
         str(second.id),
         ApprovalDecisionRequest(decision="edit", edited_args={"file_path": "/b"}),
+        user_id="local",
     )
     assert len(recorder.calls) == 1
     _run_id, decisions = recorder.calls[0]
@@ -416,10 +437,14 @@ async def test_reject_and_respond_carry_feedback_into_hitl_payload() -> None:
     service, _session, _pipeline, recorder = _service([reject_row, respond_row])
 
     await service.decide(
-        str(reject_row.id), ApprovalDecisionRequest(decision="reject", feedback="不要执行")
+        str(reject_row.id),
+        ApprovalDecisionRequest(decision="reject", feedback="不要执行"),
+        user_id="local",
     )
     await service.decide(
-        str(respond_row.id), ApprovalDecisionRequest(decision="respond", feedback="人工代答")
+        str(respond_row.id),
+        ApprovalDecisionRequest(decision="respond", feedback="人工代答"),
+        user_id="local",
     )
 
     decisions = recorder.calls[0][1]
@@ -432,13 +457,17 @@ async def test_repeated_decision_is_409() -> None:
     service, *_ = _service([row])
 
     with pytest.raises(ApprovalAlreadyResolved):
-        await service.decide(str(row.id), ApprovalDecisionRequest(decision="reject"))
+        await service.decide(
+            str(row.id), ApprovalDecisionRequest(decision="reject"), user_id="local"
+        )
 
 
 async def test_unknown_approval_is_404() -> None:
     service, *_ = _service([])
     with pytest.raises(ApprovalNotFound):
-        await service.decide(str(uuid.uuid4()), ApprovalDecisionRequest(decision="approve"))
+        await service.decide(
+            str(uuid.uuid4()), ApprovalDecisionRequest(decision="approve"), user_id="local"
+        )
 
 
 async def test_invalid_decision_payload_is_422() -> None:
@@ -449,11 +478,11 @@ async def test_invalid_decision_payload_is_422() -> None:
 
     bad_edit = ApprovalDecisionRequest.model_construct(decision="edit", edited_args=None)
     with pytest.raises(InvalidArgument):
-        await service.decide(str(edit_row.id), bad_edit)
+        await service.decide(str(edit_row.id), bad_edit, user_id="local")
 
     bad_respond = ApprovalDecisionRequest.model_construct(decision="respond", feedback="  ")
     with pytest.raises(InvalidArgument):
-        await service.decide(str(respond_row.id), bad_respond)
+        await service.decide(str(respond_row.id), bad_respond, user_id="local")
 
 
 async def test_edit_with_empty_edited_args_is_rejected() -> None:
@@ -462,7 +491,9 @@ async def test_edit_with_empty_edited_args_is_rejected() -> None:
     service, *_ = _service([row])
 
     with pytest.raises(InvalidArgument):
-        await service.decide(str(row.id), ApprovalDecisionRequest(decision="edit", edited_args={}))
+        await service.decide(
+            str(row.id), ApprovalDecisionRequest(decision="edit", edited_args={}), user_id="local"
+        )
 
     assert row.status == "pending", "非法决策不得落行"
     assert row.decision is None
@@ -475,7 +506,9 @@ async def test_scope_session_upgrades_session_approval_mode() -> None:
     service, _session, _pipeline, _recorder = _service([row], session_row=session_row)
 
     item, _run_id = await service.decide(
-        str(row.id), ApprovalDecisionRequest(decision="approve", scope="session")
+        str(row.id),
+        ApprovalDecisionRequest(decision="approve", scope="session"),
+        user_id="local",
     )
 
     assert item.scope == "session"
@@ -498,12 +531,15 @@ async def test_session_scope_is_rejected_for_reject_and_respond() -> None:
 
     with pytest.raises(InvalidArgument):
         await service.decide(
-            str(reject_row.id), ApprovalDecisionRequest(decision="reject", scope="session")
+            str(reject_row.id),
+            ApprovalDecisionRequest(decision="reject", scope="session"),
+            user_id="local",
         )
     with pytest.raises(InvalidArgument):
         await service.decide(
             str(respond_row.id),
             ApprovalDecisionRequest(decision="respond", scope="session", feedback="人工代答"),
+            user_id="local",
         )
 
     assert session_row.approval_mode == "manual", "非法组合不得升级会话审批模式"
@@ -517,9 +553,81 @@ async def test_resume_not_triggered_when_run_left_waiting() -> None:
     row = _approval()
     service, _session, _pipeline, recorder = _service([row], run_status="stopped")
 
-    await service.decide(str(row.id), ApprovalDecisionRequest(decision="approve"))
+    await service.decide(str(row.id), ApprovalDecisionRequest(decision="approve"), user_id="local")
 
     assert recorder.calls == []
+
+
+# ---------------------------------------------------------------- 归属校验（安全 P2-3）
+
+
+async def test_list_approvals_always_filters_by_user_id() -> None:
+    """列表强制 `approvals.user_id = 当前用户`（缺此条件 = 跨用户可读，P2-3）。"""
+    session = _StatementCapturingSession()
+    service = ApprovalService(session, pipeline=FakePipeline(session))  # type: ignore[arg-type]
+
+    page = await service.list_approvals(user_id="alice", status="pending")
+
+    assert page.items == []
+    assert len(session.scalars_statements) == 1, "列表只发一条查询"
+    compiled = str(session.scalars_statements[0].compile(compile_kwargs={"literal_binds": True}))
+    assert "approvals.user_id" in compiled, "列表 SQL 必须带 user_id 条件"
+    assert "'alice'" in compiled, "条件值必须是当前用户"
+
+
+async def test_get_approval_of_other_user_is_404() -> None:
+    """详情：非归属与不存在同码 404（不泄漏存在性）；归属人自己仍可读。"""
+    row = _approval(user_id="intruder")
+    service, *_ = _service([row])
+
+    with pytest.raises(ApprovalNotFound):
+        await service.get_approval(str(row.id), user_id="local")
+
+    item = await service.get_approval(str(row.id), user_id="intruder")
+    assert (item.id, item.status) == (str(row.id), "pending")
+
+
+async def test_decide_of_other_user_is_404_and_leaves_row_pending() -> None:
+    """决策：非归属一律 404，且不落行、不回声、不启动 resume。"""
+    row = _approval(user_id="intruder")
+    service, _session, pipeline, recorder = _service([row])
+
+    with pytest.raises(ApprovalNotFound):
+        await service.decide(
+            str(row.id), ApprovalDecisionRequest(decision="approve"), user_id="local"
+        )
+
+    assert (row.status, row.decision, row.decided_by) == ("pending", None, None)
+    assert pipeline.events == []
+    assert recorder.calls == []
+
+
+async def test_decide_rejects_when_run_belongs_to_another_user() -> None:
+    """第二道归属：审批行 user_id 匹配、但所属 run 不属于当前用户 → 404。"""
+    row = _approval(user_id="local")
+    service, _session, pipeline, recorder = _service([row], run_user_id="intruder")
+
+    with pytest.raises(ApprovalNotFound):
+        await service.decide(
+            str(row.id), ApprovalDecisionRequest(decision="approve"), user_id="local"
+        )
+
+    assert row.status == "pending", "非归属决策不得落行"
+    assert pipeline.events == []
+    assert recorder.calls == []
+
+
+async def test_decide_rejects_when_session_belongs_to_another_user() -> None:
+    """第二道归属：审批行 user_id 匹配、但所属会话不属于当前用户 → 404。"""
+    row = _approval(user_id="local")
+    service, *_ = _service([row], session_row=_session_row(user_id="intruder"))
+
+    with pytest.raises(ApprovalNotFound):
+        await service.decide(
+            str(row.id), ApprovalDecisionRequest(decision="approve"), user_id="local"
+        )
+
+    assert row.status == "pending"
 
 
 # ---------------------------------------------------------------- AUTO 留痕 / stop 清理

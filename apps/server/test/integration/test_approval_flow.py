@@ -316,6 +316,63 @@ async def test_repeated_decision_is_409_and_unknown_is_404(
     assert decision_missing.json()["code"] == "APPROVAL_NOT_FOUND"
 
 
+async def test_foreign_user_approval_is_invisible_and_undecidable(
+    async_client, approval_env, db_session
+) -> None:
+    """安全 P2-3：另一 user_id 的审批行——列表不可见、详情/决策一律 404（不泄漏存在性）。
+
+    默认本地用户（`LOCAL_USER_ID` 缺省 "local"）与写入路径同源（`sessions.user_id`
+    的 DB 默认 'local'），因此自己创建的审批行为不变；只有他用户的行被归属过滤隔离。
+    """
+    session_id, own, run = await _park_execute(async_client, approval_env, db_session)
+
+    foreign = Approval(
+        user_id="intruder",
+        session_id=uuid.UUID(session_id),
+        run_id=run.id,
+        tool_call_id="foreign-call",
+        tool="execute",
+        args={"command": "rm -rf /tmp/foreign"},
+        risk_level="high",
+        reason="他用户的未决审批",
+        status="pending",
+        scope="once",
+    )
+    db_session.add(foreign)
+    await db_session.commit()
+
+    # 列表：同一会话上下文与全局列表都不可见（SQL 层 user_id 过滤）
+    page = ApprovalPage.model_validate(
+        unwrap(await async_client.get(f"{APPROVALS}?status=pending&session_id={session_id}"))
+    )
+    assert [item.id for item in page.items] == [str(own.id)]
+    global_page = ApprovalPage.model_validate(unwrap(await async_client.get(APPROVALS)))
+    assert str(foreign.id) not in [item.id for item in global_page.items]
+
+    # 详情与决策：他用户的行与不存在同码 404（不泄漏存在性）
+    detail = await async_client.get(f"{APPROVALS}/{foreign.id}")
+    assert detail.status_code == 404
+    assert detail.json()["code"] == "APPROVAL_NOT_FOUND"
+
+    decide = await async_client.post(
+        f"{APPROVALS}/{foreign.id}/decide", json={"decision": "approve"}
+    )
+    assert decide.status_code == 404
+    assert decide.json()["code"] == "APPROVAL_NOT_FOUND"
+
+    # 404 不是「静默成功」：他用户的行保持 pending、无决策人
+    async with get_session_factory()() as fresh:
+        row = await fresh.get(Approval, foreign.id)
+    assert row is not None
+    assert (row.status, row.decision, row.decided_by) == ("pending", None, None)
+
+    # 默认用户自己的行仍可读（归属校验不改变单用户行为）
+    own_detail = ApprovalItem.model_validate(
+        unwrap(await async_client.get(f"{APPROVALS}/{own.id}"))
+    )
+    assert (own_detail.id, own_detail.status) == (str(own.id), "pending")
+
+
 async def test_edit_without_args_is_422(async_client, approval_env, db_session) -> None:
     """契约 DTO 守门：edit 缺 edited_args → 422 INVALID_ARGUMENT（不落行）。"""
     _session_id, approval, _run = await _park_execute(async_client, approval_env, db_session)
@@ -554,7 +611,9 @@ async def test_concurrent_decisions_in_same_batch_resume_exactly_once(
             service = ApprovalService(
                 session, pipeline=approval_env.pipeline, resume_starter=recorder
             )
-            await service.decide(str(approval_id), ApprovalDecisionRequest(decision="approve"))
+            await service.decide(
+                str(approval_id), ApprovalDecisionRequest(decision="approve"), user_id="local"
+            )
 
     await asyncio.gather(*(_approve(row.id) for row in rows))
 
@@ -589,7 +648,9 @@ async def test_concurrent_duplicate_decision_has_single_winner(
                 session, pipeline=approval_env.pipeline, resume_starter=recorder
             )
             try:
-                await service.decide(str(approval.id), ApprovalDecisionRequest(decision="approve"))
+                await service.decide(
+                    str(approval.id), ApprovalDecisionRequest(decision="approve"), user_id="local"
+                )
             except ApprovalAlreadyResolved:
                 return "conflict"
             return "ok"
@@ -665,7 +726,9 @@ async def test_concurrent_decide_and_stop_keeps_user_decision(
     monkeypatch.setattr(ApprovalService, "_resume_decisions_if_complete", _blocked)
 
     decide_task = asyncio.create_task(
-        decide_service.decide(str(approval.id), ApprovalDecisionRequest(decision="approve"))
+        decide_service.decide(
+            str(approval.id), ApprovalDecisionRequest(decision="approve"), user_id="local"
+        )
     )
     stop_task: asyncio.Task[Any] | None = None
     try:
@@ -735,15 +798,17 @@ async def test_stop_committed_first_makes_decide_409_without_user_echo(
     release = asyncio.Event()
     original_require = ApprovalService._require_pending_row
 
-    async def _gated(self: ApprovalService, approval_id: str) -> Approval:
+    async def _gated(self: ApprovalService, approval_id: str, *, user_id: str) -> Approval:
         entered.set()  # decide 在拿行锁之前停下：stop 可完整走完（提交先于用户决策）
         await release.wait()
-        return await original_require(self, approval_id)
+        return await original_require(self, approval_id, user_id=user_id)
 
     monkeypatch.setattr(ApprovalService, "_require_pending_row", _gated)
 
     decide_task = asyncio.create_task(
-        decide_service.decide(str(approval.id), ApprovalDecisionRequest(decision="approve"))
+        decide_service.decide(
+            str(approval.id), ApprovalDecisionRequest(decision="approve"), user_id="local"
+        )
     )
     try:
         await asyncio.wait_for(entered.wait(), timeout=10)

@@ -8,7 +8,7 @@ BaseSandbox（deepagents 0.6.12，backends/sandbox.py）
      │  LCode **不重写**——只翻译执行与文件读写原语
 LcodeSandbox（本模块）
      ▲  ① 协议 4 抽象成员的具体实现：execute / upload_files / download_files / id
-     │  ② LCode 扩展（协议外）：生命周期 create/pause/resume/kill/status、
+     │  ② LCode 扩展（协议外）：生命周期 create/adopt/pause/resume/kill/status、
      │     输出流回调、usage 分段钩子、round-0 兜底基线、工具链探针
      ├── BailianSandbox（bailian.py，e2b==2.31.0 钉死 / E2B 协议）
      └── OpenSandboxSandbox（opensandbox.py，自有协议 / 1.1.1）
@@ -31,6 +31,12 @@ LcodeSandbox（本模块）
 故这些方法不进入对齐面，由 `manager.py` 编排（A3 §4.3）。sandbox 层只 raise 本模块的
 异常族；到 REST 的映射由上层 service 负责（`sandbox/` 不依赖 `events/`、`models/`）。
 
+**懒 provision（懒加载）**：三个协议原语入口（`run_command` / `upload_files` /
+`download_files`）先经 `_ensure_provisioned()` 确保实例可用——首次实际使用才触发
+create/adopt/resume 网络调用，并经 `ProvisionObserver` 通知 manager 做相位/计费段/
+生命周期事件迁移；纯聊天 run 全程零网络、零计费段。provision 失败表现为该次工具
+调用的工具错误（异常经原语上抛），不炸整个 run。
+
 密钥纪律（NFR-004）：本模块只出现「环境变量名」，不出现密钥本体；读取发生在
 `bailian.py` / `opensandbox.py` 的 `_require_api_key()`。
 """
@@ -40,6 +46,7 @@ from __future__ import annotations
 import abc
 import re
 import shlex
+import threading
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -205,6 +212,27 @@ class CommandProbe:
 OutputHandler = Callable[[SandboxOutputChunk], None]
 UsageHandler = Callable[[SandboxUsageSegment], None]
 
+ProvisionPhase = Literal["creating", "running", "resumed", "crashed"]
+"""懒 provision 通知相位（适配器 → manager；manager 据此做相位/计费段/事件迁移）。"""
+
+
+@dataclass(frozen=True, slots=True)
+class SandboxProvisionNotice:
+    """一次懒 provision 的状态通知（在**工具执行线程**内发出，非事件循环线程）。
+
+    - `creating`：provision 网络动作开始前（manager 落 creating 相位并 emit）；
+    - `running`：create/adopt 成功（manager 落 running、开计费段、emit）；
+    - `resumed`：paused 实例的懒 resume 成功（manager 切段并 emit resumed）；
+    - `crashed`：provision 失败（manager 走 mark_crashed 语义：摘表、封段、emit）。
+    """
+
+    phase: ProvisionPhase
+    reason: str | None = None
+
+
+ProvisionObserver = Callable[[SandboxProvisionNotice], None]
+"""懒 provision 观察者（实现 = `SandboxManager._on_lazy_provision`；只通报不决策）。"""
+
 # round-0 基线用的 git 命令与身份（沙箱内可能没有 git 身份配置，显式 -c 传入，
 # 不修改沙箱内的 git config——AC-002-5 要求"不做任何 git 写操作"仅限于 git 输入分支）
 GIT_PROBE_COMMAND = "git rev-parse --is-inside-work-tree"
@@ -243,7 +271,7 @@ class LcodeSandbox(BaseSandbox, abc.ABC):
       `emit_output_text()` 分发；
     - `_write_file(path, content)` / `_read_file(path)`：单文件读写（失败抛
       `SandboxFileError`）；
-    - `create` / `pause` / `resume` / `kill` / `status`：生命周期（协议外扩展）。
+    - `create` / `adopt` / `pause` / `resume` / `kill` / `status`：生命周期（协议外扩展）。
 
     provider 标识默认在类上声明、实例可覆盖（factory 按它注册；AC-002-6）。
     """
@@ -256,6 +284,127 @@ class LcodeSandbox(BaseSandbox, abc.ABC):
         self._sandbox_id: str | None = None
         self._output_handlers: list[OutputHandler] = []
         self._usage_handlers: list[UsageHandler] = []
+        # ---- 懒 provision（懒加载）状态面 ----
+        self._provision_observer: ProvisionObserver | None = None
+        self._pending_adopt_id: str | None = None
+        self._paused = False
+        self._provision_error: SandboxError | None = None
+        self._provision_lock = threading.Lock()
+
+    # ------------------------------------------------------- 懒 provision（懒加载）
+
+    @property
+    def provisioned(self) -> bool:
+        """是否已 provision（持有真实 provider 侧实例与 id）；懒加载/短路判据。"""
+        return self._sandbox_id is not None
+
+    @property
+    def paused(self) -> bool:
+        """适配器侧 pause 标志（懒 resume 判据；由 pause()/resume()/create()/adopt() 维护）。"""
+        return self._paused
+
+    def set_provision_observer(self, observer: ProvisionObserver | None) -> None:
+        """注册懒 provision 通知回调（manager 注入；触发点在工具执行线程内）。"""
+        self._provision_observer = observer
+
+    def set_pending_adopt_id(self, sandbox_id: str) -> None:
+        """注入懒 provision 的 adopt 目标（`sessions.sandbox_id` 持久值；manager 注入）。
+
+        只在**未 provision** 时有意义：首次实际使用时走 `adopt` 而非 `create`。
+        """
+        self._pending_adopt_id = sandbox_id
+
+    def _mark_paused(self) -> None:
+        """生命周期 pause 成功后登记（`_ensure_provisioned` 的 resume 判据）。"""
+        self._paused = True
+
+    def _mark_resumed(self) -> None:
+        """生命周期 create/adopt/resume 成功后登记（实例处于可执行状态）。"""
+        self._paused = False
+
+    def _ensure_provisioned(self) -> None:
+        """懒 provision：**首次实际使用**沙箱时拉起（run_command/upload_files/download_files
+        入口）。
+
+        幂等：已 provision 且非 paused 直接返回；provision 失败**烙死**——同实例后续
+        调用重复抛同一错误，绝不在 manager 已摘除该实例后另起一个无人认领的沙箱。
+
+        路径优先级：未 provision + pending adopt id → `adopt`；已 provision + paused →
+        `resume`；否则 → `create`。adopt 遇「不可达」类失败（`SandboxUnavailable`，如
+        持久 id 已被回收）时在同一次首次使用内降级 create 兜底（成功通知 reason 改
+        "recreated"，对齐 eager adopt→rebuild 自愈链，AC-002-4）；配置类错误不降级。
+        每个网络动作前后经 provision observer 通知 manager 做相位/计费段/生命周期事件
+        迁移（`SandboxManager._on_lazy_provision`），失败经同通道告知（manager 落
+        crashed），异常原样上抛——由 deepagents 工具层转 ToolMessage，不炸整个 run。
+        """
+        with self._provision_lock:
+            if self._provision_error is not None:
+                raise self._provision_error
+            if self.provisioned and not self._paused:
+                return
+            observer = self._provision_observer
+            try:
+                if not self.provisioned:
+                    pending = self._pending_adopt_id
+                    self._pending_adopt_id = None  # 只消费一次（失败即死，不重放）
+                    self._notify_provision(observer, SandboxProvisionNotice("creating", None))
+                    if pending is not None:
+                        try:
+                            self.adopt(pending)
+                        except SandboxUnavailable:
+                            # P1 自愈：持久 id 已失效（被回收/不存在）→ 同一次首次使用内
+                            # 降级 create 兜底（对齐 eager adopt→rebuild 自愈链，AC-002-4）。
+                            # 成功通知 reason 改 "recreated"（保留重建告知语义）；降级只
+                            # 针对「不可达」类，配置类错误仍按失败收敛（create 同样会撞）。
+                            # 烙死交互：create 兜底也失败时异常上抛到外层 except——
+                            # `_provision_error` 只对最终失败生效。
+                            self.create()
+                            self._mark_resumed()
+                            self._notify_provision(
+                                observer, SandboxProvisionNotice("running", "recreated")
+                            )
+                            return
+                        self._mark_resumed()
+                        self._notify_provision(observer, SandboxProvisionNotice("running", "adopt"))
+                    else:
+                        self.create()
+                        self._mark_resumed()
+                        self._notify_provision(observer, SandboxProvisionNotice("running", None))
+                    return
+                # 已 provision 但 paused：先恢复再使用（沿用同一 handle，不重建）
+                self.resume()
+                self._mark_resumed()
+                self._notify_provision(observer, SandboxProvisionNotice("resumed", "user"))
+            except Exception as exc:
+                error = (
+                    exc
+                    if isinstance(exc, SandboxError)
+                    else SandboxUnavailable(
+                        f"懒 provision 失败：{type(exc).__name__}",
+                        detail=str(exc),
+                        original_exception=exc,
+                    )
+                )
+                self._provision_error = error
+                self._notify_provision(observer, SandboxProvisionNotice("crashed", error.message))
+                raise error from (None if error is exc else exc)
+
+    @staticmethod
+    def _notify_provision(
+        observer: ProvisionObserver | None, notice: SandboxProvisionNotice
+    ) -> None:
+        """provision 通知的旁路出口：observer 故障只记日志，不阻断命令/错误主链。"""
+        if observer is None:
+            return
+        try:
+            observer(notice)
+        except Exception as exc:  # noqa: BLE001 —— 通知是旁路，坏了不能拖垮命令
+            log = BusinessLog(
+                message="懒 provision 通知回调失败（已忽略，不影响沙箱使用）",
+                action="沙箱回调",
+                entity="sandbox",
+            )
+            log.warning(exc)
 
     # ------------------------------------------------------- 协议成员（deepagents 面）
 
@@ -297,6 +446,7 @@ class LcodeSandbox(BaseSandbox, abc.ABC):
         参数，输出块据此标注来源（AC-002-1）；上下文也没有 = 无工具路径，块由上游
         事件桥按契约诚实跳过。
         """
+        self._ensure_provisioned()  # 懒加载：首次实际使用才 provision（纯聊天不触网）
         if exec_id is None:
             exec_id = EXEC_ID_CONTEXT.get()
         return self._execute_command(command, timeout=timeout, exec_id=exec_id)
@@ -308,6 +458,7 @@ class LcodeSandbox(BaseSandbox, abc.ABC):
         （file_not_found / permission_denied / is_directory / invalid_path），
         未知异常如实带上类型名（deepagents 允许 backend-specific 错误串）。
         """
+        self._ensure_provisioned()  # 懒加载：首次实际使用才 provision（纯聊天不触网）
         responses: list[FileUploadResponse] = []
         for path, content in files:
             try:
@@ -322,6 +473,7 @@ class LcodeSandbox(BaseSandbox, abc.ABC):
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """批量下载：逐文件部分成功，响应顺序与入参一致（deepagents 契约）。"""
+        self._ensure_provisioned()  # 懒加载：首次实际使用才 provision（纯聊天不触网）
         responses: list[FileDownloadResponse] = []
         for path in paths:
             try:
@@ -355,6 +507,17 @@ class LcodeSandbox(BaseSandbox, abc.ABC):
     @abc.abstractmethod
     def create(self, *, timeout_seconds: int | None = None) -> None:
         """provision 沙箱实例（相位 creating 的实体动作；失败抛 `SandboxUnavailable`）。"""
+
+    @abc.abstractmethod
+    def adopt(self, sandbox_id: str) -> None:
+        """按 provider 侧**已存在**的沙箱 id 重连并取得 handle（S3 adopt）。
+
+        语义：不做任何 provision——id 来自上一进程生命周期留下的 `sessions.sandbox_id`，
+        provider 侧实例可能仍在（paused 自动恢复、running 直接连上）。成功后实例的
+        `id`/`sandbox_id` 即 `sandbox_id`；沙箱不存在/不可达抛 `SandboxUnavailable`
+        （调用方转重建路径），配置缺失抛 `SandboxConfigurationError`。只能作用于尚未
+        provision 的适配器实例（先 adopt 或先 create，二者互斥）。
+        """
 
     @abc.abstractmethod
     def pause(self) -> None:
@@ -550,6 +713,7 @@ __all__ = [
     "SandboxOutputChunk",
     "SandboxPhase",
     "SandboxProvider",
+    "SandboxProvisionNotice",
     "SandboxStatus",
     "SandboxUnavailable",
     "SandboxUsageSegment",
@@ -557,6 +721,8 @@ __all__ = [
     "StreamName",
     "UsageHandler",
     "UsagePhase",
+    "ProvisionObserver",
+    "ProvisionPhase",
     "combine_output",
     "probe_required",
 ]

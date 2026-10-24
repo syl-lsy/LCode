@@ -14,12 +14,14 @@
   后调用本脚本，两环都绿才算门禁过。
 
 预算基线（双态口径；FAMILIES 预算不变）：
-- **无凭证态**（2026-10-19 实测 ``make test`` = unit+integration，共 12 skipped）：
+- **无凭证态**（2026-10-19 实测 ``make test`` = unit+integration，共 12 skipped；
+  2026-10-24 S3 新增 OpenSandbox adopt 真冒烟后为 13）：
   unit 7（requires_llm：test_llm_factory 1 + test_llm_real_gateway 6）；
-  integration 5（requires_sandbox 4：test_sandbox_real 百炼 +
-  requires_sandbox_opensandbox 1：OpenSandbox 冒烟）；
-- **凭证齐备态**（2026-10-20 实测，共 1 skipped）：仅 `requires_sandbox_opensandbox`
-  跳过（requires_llm 与真百炼冒烟均已实际执行）；
+  integration 6（requires_sandbox 4：test_sandbox_real 百炼 +
+  requires_sandbox_opensandbox 2：OpenSandbox 冒烟 + S3 adopt 重连）；
+- **凭证齐备态**（2026-10-20 实测，共 1 skipped；2026-10-24 S3 后为 2）：
+  仅 `requires_sandbox_opensandbox` 跳过（smoke + adopt 重连两条；requires_llm 与
+  真百炼冒烟均已实际执行）；
 - requires_db 家族（integration/conftest 缺库显式 skip 通道）：预算 = 当前 requires_db
   用例总数 60——本机常态库可用、不出现；CI 已配 postgres service 同理。该通道若真被
   触发（环境缺库），覆盖率 --cov-fail-under=80 环会先红兜底（60 用例 skip 后 app 覆盖
@@ -60,7 +62,9 @@ FAMILIES: list[tuple[str, list[str], int]] = [
             "requires_sandbox_opensandbox 显式跳过",
             "SANDBOX_OPENSANDBOX_IMAGE 未设置",
         ],
-        1,
+        # 2 = test_opensandbox_smoke（U4 冒烟）+ test_opensandbox_restart_reconnect_by_id
+        #   （S3 adopt 真沙箱回归，评审项 1 补位；2026-10-24 预算 1→2）
+        2,
     ),
     (
         "requires_db",

@@ -4,6 +4,8 @@
 
 - `get_db`（本文件）——请求级事务边界：正常统一 commit、异常统一 rollback
   （基座铁律 10；service 内只 `flush()` 不 `commit()`）；
+- `get_current_user_id`（安全 P2-3）：当前请求的用户标识（P0 固定本地用户；P2 鉴权
+  中间件只替换该依赖实现，service 层归属过滤不动）；
 - `get_event_pipeline`（M2 任务 7）：`EventPipeline` 单例（进程内总线 + emitter）；
 - `get_sandbox_manager`（M2 任务 4）：`SandboxManager` 单例（会话沙箱注册表）；
 - `get_model_registry`（M2 任务 3，已落地）：`ModelRegistry` 单例（models.yaml 加载器）；
@@ -29,12 +31,14 @@ from langgraph.checkpoint.memory import InMemorySaver
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agent.models_registry import ModelRegistry, model_registry
+from app.core.config import common_settings
 from app.core.db import get_session_factory
 from app.core.logger import BusinessLog
 from app.events import EventPipeline
 from app.sandbox.base import SandboxOutputChunk
 from app.sandbox.manager import SandboxLifecycleEvent, SandboxManager, SandboxUsageRecord
 from app.services.cost_service import record_sandbox_usage_short_tx
+from app.services.session_service import update_session_sandbox_id_short_tx
 from app.utils import clock
 from lcode_contracts.events import SandboxOutputEvent
 
@@ -182,6 +186,16 @@ def _default_sandbox_lookup(session_id: str) -> Any:
     return get_sandbox_manager().get(session_id)
 
 
+_DB_PHASES: frozenset[str] = frozenset({"running", "resumed", "recreated"})
+"""写回 `sessions.sandbox_id` 的相位集合（S3 adopt 重连的持久 id 来源）。
+
+running/resumed（S3 任务的既定口径）+ **recreated**（刻意超集）：adopt 失败转 rebuild
+后的 recreated 事件携带**新**沙箱 id——不写回的话 sessions.sandbox_id 永远停在已回收的
+旧 id 上，每次进程重启都会重演「adopt 死 id → 失败 → 再重建 → 现场丢失」；写回后下次
+重启才能 adopt 到重建过的活实例。语义上三值都表示「有一个可用的 provider 侧实例」。
+"""
+
+
 def build_sandbox_event_bridges(
     pipeline: EventPipeline, *, lookup: Any = None
 ) -> tuple[Any, Any, Any]:
@@ -190,13 +204,16 @@ def build_sandbox_event_bridges(
     依赖方向（A3 §1.2）：`sandbox/` 禁止 import `events/`/`models/`，桥只能住在装配层
     （本模块）——manager 只持有无业务语义的回调面。`lookup` 是 session_id → 存活实例的
     查找面（缺省 = 进程单例 manager；测试可注入替身 manager）。usage 封口段走
-    `record_sandbox_usage_short_tx`（短事务，失败只记日志）。
+    `record_sandbox_usage_short_tx`（短事务，失败只记日志）；可服务实例的相位迁移
+    另写 `sessions.sandbox_id`（`update_session_sandbox_id_short_tx`，同为短事务）。
     """
 
     def on_lifecycle(event: SandboxLifecycleEvent) -> None:
         payload = sandbox_lifecycle_payload(event)
         if payload is not None:
             _launch(pipeline.emit(payload))
+        if event.phase in _DB_PHASES and event.sandbox_id is not None:
+            _launch(update_session_sandbox_id_short_tx(event.session_id, event.sandbox_id))
 
     def on_output(session_id: str, chunk: SandboxOutputChunk) -> None:
         finder = lookup if lookup is not None else _default_sandbox_lookup
@@ -360,6 +377,25 @@ RunServiceDep = Annotated[Any, Depends(get_run_service)]
 """run 编排依赖锚点：消息（启动）/runs（停止）/costs+sandbox（沙箱投影）/sessions（删除）。"""
 
 
+def get_current_user_id() -> str:
+    """当前请求的用户标识（**P0 固定本地用户**；P2 鉴权中间件的唯一替换点）。
+
+    P0 单人自用、尚未实现鉴权：固定返回配置的 `LOCAL_USER_ID`（默认 `"local"`）。它与
+    写入侧同源——业务行 `user_id` 取会话行的 DB 默认值 `'local'`（`run_service` 把
+    `sessions.user_id` 透传给 approvals/runs 等写入），因此默认值必须一致，否则归属
+    过滤会把存量数据全部挡在外面。
+
+    请求侧 service 以本值为归属条件（approvals 三端点的 `user_id` 过滤；P2 接入鉴权时
+    只需替换本依赖的实现，service 层不动）。e2e/测试经 `app.dependency_overrides` 注入
+    其他用户来验证跨用户隔离。
+    """
+    return common_settings.local_user_id
+
+
+CurrentUserIdDep = Annotated[str, Depends(get_current_user_id)]
+"""当前用户依赖锚点：路由层由此取归属主体，不自行解析身份（P2 前恒为本地用户）。"""
+
+
 async def get_db() -> AsyncIterator[AsyncSession]:
     """请求级数据库会话：请求成功统一 commit、异常统一 rollback、退出即关闭。
 
@@ -380,6 +416,7 @@ async def get_db() -> AsyncIterator[AsyncSession]:
 
 
 __all__ = [
+    "CurrentUserIdDep",
     "EventPipelineDep",
     "ModelFactoryLike",
     "ModelRegistryDep",
@@ -387,6 +424,7 @@ __all__ = [
     "SandboxManagerDep",
     "build_sandbox_event_bridges",
     "get_checkpointer",
+    "get_current_user_id",
     "get_db",
     "get_db_factory",
     "get_event_pipeline",

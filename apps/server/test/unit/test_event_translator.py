@@ -938,6 +938,48 @@ def test_run_status_started_once_and_finished_with_usage_totals() -> None:
     _assert_contract(events)
 
 
+def test_finish_run_applies_usage_offset_after_closing_in_flight_messages() -> None:
+    """跨段基数在**补收在飞消息之后**相加（M4 前置 D5：事件/DB 行/残差同源）。
+
+    在飞消息的 usage 只有在 `finish_run` 收口时才进 `_usage_totals`；调用方若在
+    `sink.finish` 之前预读本段用量，会漏掉它（M2 起的老实现即如此）。本用例锁住
+    顺序：offset（既往段落 100/50）+ 本段（含在飞消息 4/6）= 104/56。
+    """
+    tr = _translator()
+    _translated(
+        tr,
+        _messages(
+            AIMessageChunk(
+                content="done",
+                usage_metadata={"input_tokens": 4, "output_tokens": 6, "total_tokens": 10},
+            )
+        ),
+    )
+    assert tr.usage_totals == Usage()  # 在飞消息尚未收口：此刻读到的用量不完整
+
+    events = _finished(tr, "finished", usage_offset=Usage(input_tokens=100, output_tokens=50))
+
+    assert [e.type for e in events] == ["message_finished", "run_status"]
+    assert events[0].usage == Usage(input_tokens=4, output_tokens=6)
+    assert events[1].usage_totals == Usage(input_tokens=104, output_tokens=56)
+    _assert_contract(events)
+
+
+def test_finish_run_ignores_usage_offset_for_stopped_and_error_phases() -> None:
+    """stopped/error 不带 totals（契约允许），offset 不得把用量塞进非 finished 相位。"""
+    tr = _translator()
+    stopped = _finished(tr, "stopped", usage_offset=Usage(input_tokens=100, output_tokens=50))
+    error = _finished(
+        tr,
+        "error",
+        error=RunErrorObj(code="model_error", message="模型网关调用失败", retryable=True),
+        usage_offset=Usage(input_tokens=100, output_tokens=50),
+    )
+    assert stopped[-1].usage_totals is None
+    assert error[-1].usage_totals is None
+    _assert_contract(stopped + error)
+
+
 def test_finish_run_error_requires_error_object_and_closes_open_message() -> None:
     tr = _translator()
     _translated(tr, _messages(AIMessageChunk(content="半截输出")))

@@ -65,6 +65,7 @@ from app.models import (
     ToolCall,
 )
 from app.models import Event as EventRow
+from app.sandbox.base import LcodeSandbox, SandboxProvider
 from app.sandbox.manager import SandboxManager
 from app.services.approval_service import (
     ApprovalService,
@@ -372,14 +373,19 @@ class _RunEventSink:
         phase: str,
         *,
         error: Any = None,
-        usage_totals: Usage | None = None,
+        usage_offset: Usage | None = None,
     ) -> None:
-        """run 收口：translator.finish_run（在飞消息补 message_finished + run_status）→ emit。"""
+        """run 收口：translator.finish_run（在飞消息补 message_finished + run_status）→ emit。
+
+        `usage_offset` = 该 run **既往段落**的 model_calls token 合计（跨段基数）。本段
+        用量由 translator 在**补收在飞消息之后**自行计入再与基数相加——调用方不得预读
+        `translator.usage_totals`（在飞消息的 usage 收口前还没入账，M4 前置 D5）。
+        """
         await self.emit_all(
             self._translator.finish_run(
                 phase,  # type: ignore[arg-type]  # 调用方传 finished/stopped/error 三字面量
                 error=error,
-                usage_totals=usage_totals if phase == "finished" else None,
+                usage_offset=usage_offset if phase == "finished" else None,
             )
         )
 
@@ -547,11 +553,15 @@ class RunService(BaseService):
         """后台任务主体：装配 → 消费 → 收口（A3 §5.5 职责链 1-5 的编排侧）。
 
         **永不抛出**（后台任务无人 await 异常）：一切失败路径都收敛到「run_status(error)
-        + run 行 error」，残余异常只进日志。注意沙箱拉起是同步调用（适配器面无异步 API），
-        P0 取舍：阻塞事件循环的时长 ≈ 沙箱 provision 时长，真 provider 的异步化属沙箱车道。
+        + run 行 error」，残余异常只进日志。沙箱是**懒就绪**的（bug 修复）：`_ensure_backend`
+        只登记未 provision 实例（零网络），真实 provision 推迟到 run 内首次实际使用沙箱
+        （第一条命令/文件读写）时由适配器内触发——纯聊天 run 全程零沙箱网络调用。
+        `ensure_lazy` 是同步调用，经 `asyncio.to_thread` 卸载到工作线程执行（S1 口径）：
+        工厂构造与会话锁等待不占事件循环；同一会话的并发 ensure 由 manager 的会话级锁
+        串行化（S2）。
         """
         try:
-            backend = self._ensure_backend(launch)
+            backend = await self._ensure_backend(launch)
         except Exception as exc:  # noqa: BLE001 —— 沙箱不可用按运行错误收敛（AC-002-4）
             BusinessLog(
                 message="run 启动失败（沙箱装配）",
@@ -674,7 +684,7 @@ class RunService(BaseService):
                 sandbox_provider=launch.provider,
                 auto_audit=self._auto_audit_sink(launch),
             )
-            backend = self._ensure_backend(launch)
+            backend = await self._ensure_backend(launch)
             self._manager.begin_run(launch.session_id)
             if self._checkpointer is None:  # pragma: no cover —— dependencies 恒注入
                 raise RuntimeError("resume 需要 checkpointer（dependencies.get_checkpointer）")
@@ -781,6 +791,7 @@ class RunService(BaseService):
                 provider=session_row.sandbox_provider,
                 approval_mode=approval_mode,
                 user_id=session_row.user_id,
+                persisted_sandbox_id=session_row.sandbox_id,
             )
         return launch, context
 
@@ -830,16 +841,26 @@ class RunService(BaseService):
                 entity_id=run_id,
             ).error(exc)
 
-    def _ensure_backend(self, launch: RunLaunch) -> Any:
-        """会话沙箱就绪：在册即用（paused 先 resume）；不在册（none/killed/crashed）即拉新。"""
-        session_id = launch.session_id
-        client = self._manager.get(session_id)
-        if client is not None:
-            if self._manager.stable_phase(session_id) == "paused":
-                return self._manager.resume(session_id)
-            return client
-        # create 允许从 none/killed/crashed 相位拉新实例（provider 用会话固化值，AC-002-6）
-        return self._manager.create(session_id, provider=launch.provider)  # type: ignore[arg-type]
+    async def _ensure_backend(self, launch: RunLaunch) -> LcodeSandbox:
+        """会话沙箱**懒就绪**（bug 修复：`manager.ensure_lazy` 经 `asyncio.to_thread` 卸载）。
+
+        `ensure_lazy` 只构造并登记**未 provision** 的适配器实例（相位 none、零网络、
+        零计费段）——真实 provision 推迟到 run 内首次实际使用沙箱（第一条命令/文件
+        读写）时由 `LcodeSandbox._ensure_provisioned` 触发并经 provision 通知回调让
+        manager 落相位/计费段/生命周期事件。纯聊天 run 因此全程不触沙箱网络；paused
+        会话的 run 保持 paused（不 resume），首条工具调用时才懒 resume。
+
+        无异步 API 的同步面（工厂构造/会话锁）不占事件循环：同 S1 卸到工作线程；
+        并发面由 manager 的**会话级锁**收口——同一会话的「检查-登记」在锁内原子完成。
+        """
+        provider = cast("SandboxProvider | None", launch.provider)
+        client = await asyncio.to_thread(
+            self._manager.ensure_lazy,
+            launch.session_id,
+            provider=provider,
+            persisted_sandbox_id=launch.persisted_sandbox_id,
+        )
+        return client
 
     # ---------------------------------------------------------------- 停止
 
@@ -935,7 +956,8 @@ class RunService(BaseService):
             with contextlib.suppress(Exception):
                 await handle.task
 
-        self._manager.release(wire_id, reason="session_deleted")
+        # kill 是同步网络调用（适配器面无异步 API）：同 S1 卸到工作线程，不占事件循环
+        await asyncio.to_thread(self._manager.release, wire_id, reason="session_deleted")
 
         await self._purge_with_retry(key)
 
@@ -990,7 +1012,8 @@ class RunService(BaseService):
         """沙箱状态投影：`stable_phase` 稳态（resumed/recreated 折叠 running）+ 费用估算。"""
         row = await self._require_session(session_id)
         wire_id = str(row.id)
-        probe = self._manager.status(wire_id)
+        # status() 会对真 provider 发探测请求（同步网络调用）：同 S1 卸到工作线程
+        probe = await asyncio.to_thread(self._manager.status, wire_id)
         open_segment = self._manager.open_usage_segment(wire_id)
         return SandboxStatus(
             provider=row.sandbox_provider,  # type: ignore[arg-type]  # sessions.sandbox_provider CHECK 同源
@@ -1028,7 +1051,8 @@ class RunService(BaseService):
 
         顺序不可调换：事件先落库（前端状态机信号 + 可回放），成本与审计行随后
         （失败不回滚事件）。**逐次记账**（AC-015-1）：translator 每条调用记录落一行，
-        而非 run 级聚合一行——已完成调用不重复计，未记账的残差由收口对账行补齐。
+        而非 run 级聚合一行——已完成调用不重复计，残差对账以**同一 translator 累计**
+        为基准（M4 前置 D5；`outcome.usage` 只作运行诊断）。
 
         审批挂起（M3 D4）：`waiting_approval` 走**停车**分支——不调 `sink.finish`、
         不发 run_status(finished)、run 行置 waiting_approval（无 finished_at）；
@@ -1062,22 +1086,19 @@ class RunService(BaseService):
                     launch.run_id, feedback="审批挂起失败，运行已终止"
                 )
 
-        usage_totals: Usage | None = None
+        usage_offset: Usage | None = None
         if outcome.status == "finished":
-            # 跨段合计（D4）：最终段的 usage_totals = 该 run 既往 model_calls 合计 +
-            # 本段 usage（resume 前的段落已落行；只算最后一段会少计）。
-            prior = await self._prior_model_usage(launch.run_id)
-            usage_totals = Usage(
-                input_tokens=prior.input_tokens + outcome.usage.input_tokens,
-                output_tokens=prior.output_tokens + outcome.usage.output_tokens,
-            )
+            # 跨段合计（D4 + M4 前置 D5）：只取「既往段落 model_calls 合计」作为基数，
+            # 本段用量由 translator 在 sink.finish 补收在飞消息**之后**自行计入（count 和
+            # 必须发生在收口之后；在此预读 translator.usage_totals 会漏掉在飞消息）。
+            usage_offset = await self._prior_model_usage(launch.run_id)
         self._resume.pop(launch.run_id)  # 终态段不再需要 resume 播种（含 error/stopped）
 
         try:
             await sink.finish(
                 outcome.status,
                 error=outcome.error,
-                usage_totals=usage_totals,
+                usage_offset=usage_offset,
             )
         except Exception as exc:  # noqa: BLE001 —— 收口事件失败必须留痕（F1b，不允许无日志
             # suppress）：run 行与 model_calls 仍按后续顺序收口（事件流可回放重建，
@@ -1238,24 +1259,25 @@ class RunService(BaseService):
         if outcome is None:
             return
 
-        # 残差基准的已知约束（M4）：基准是 RunOutcome.usage（runtime 侧 messages 通道的
-        # 单窗口聚合），而逐次记账来自 translator（per-agent 窗口 + updates 通道）。
-        # M4 并行子智能体交错流式时两种窗口口径可能结构性分叉；届时需把基准切到同源
-        # 口径，或让 runtime 窗口对齐 per-agent。P0 单线执行下二者同源，对账成立。
-        residual_input = max(outcome.usage.input_tokens - recorded_input, 0)
-        residual_output = max(outcome.usage.output_tokens - recorded_output, 0)
-        if (
-            recorded_input > outcome.usage.input_tokens
-            or recorded_output > outcome.usage.output_tokens
-        ):
+        # 残差基准 = `translator.usage_totals`（与逐次记账同源；M4 前置 D5 已收口）。
+        # 旧基准 `RunOutcome.usage` 是 runtime 侧 messages 通道的**单消息窗口**，而逐次
+        # 记账是 per-agent 窗口 + updates 通道：并行子智能体交错流式时单窗口会把同一条
+        # 消息的累计量重复折叠（inflated），于是凭空补出对账行、终态事件与行集互不相等。
+        # 现在基准与行集同源（`_close_message` 的同一记账点），残差在正常路径恒为 0；
+        # 该比较仍保留为不变量闸门（行集若超过基准必留 warning，绝不静默改数）。
+        baseline = sink.translator.usage_totals
+        residual_input = max(baseline.input_tokens - recorded_input, 0)
+        residual_output = max(baseline.output_tokens - recorded_output, 0)
+        if recorded_input > baseline.input_tokens or recorded_output > baseline.output_tokens:
             BusinessLog(
-                message="model_calls 行集 token 超过 run 终态用量，按行集为准（不静默改数）",
+                message="model_calls 行集 token 超过本段 translator 累计，按行集为准（不静默改数）",
                 action="收口运行",
                 entity="run",
                 entity_id=launch.run_id,
             ).warning()
         if outcome.status == "error":
-            # error 路径必定恰好一条 error 行（token = 残差；已完成调用已在上面落行）
+            # error 路径必定恰好一条 error 行（已完成调用已在上面落行）。基准同源后残差
+            # 恒为 0：该行是「本 run 以失败收场」的审计标记，不承担补 token 的职责。
             await self._record_model_call(
                 self._residual_model_call_entry(
                     launch,
@@ -1268,7 +1290,7 @@ class RunService(BaseService):
             )
         elif residual_input > 0 or residual_output > 0:
             BusinessLog(
-                message="model_calls 行集少于 run 终态用量，补一条成功对账行",
+                message="model_calls 行集少于本段 translator 累计，补一条成功对账行",
                 action="收口运行",
                 entity="run",
                 entity_id=launch.run_id,

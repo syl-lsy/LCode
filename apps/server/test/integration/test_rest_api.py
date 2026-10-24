@@ -905,13 +905,18 @@ async def test_events_unknown_session_returns_rest_error_before_stream(
 async def test_delete_session_triggers_kill_and_removes_rows(
     async_client, agent_env, db_session
 ) -> None:
-    """AC-002-3：DELETE 同步 kill 会话沙箱并清理该会话全部业务行。"""
+    """AC-002-3：DELETE 同步 kill 会话沙箱并清理该会话全部业务行。
+
+    懒加载下 provision 由工具执行触发：用带 `ls` 工具调用的剧本跑一条消息——首工具
+    调用才 create，随后 DELETE 必须 kill 已 provision 的实例。
+    """
     created = await _create(async_client, title="删除会话")
-    await _post_message(async_client, created.id, scripts.SIMPLE_USER_TEXT)
+    agent_env.set_model(ScriptedChatModel(steps=scripts.tool_loop_read_only()))
+    await _post_message(async_client, created.id, "列一下目录")
     await _wait_run_idle(async_client, created.id)
     session_key = uuid.UUID(created.id)
 
-    # run 已拉起过沙箱（AC-002-1 链路），DELETE 前处于运行态
+    # 首工具调用已懒 provision：DELETE 前处于运行态
     assert agent_env.manager.stable_phase(str(session_key)) == "running"
 
     response = await async_client.delete(f"{SESSIONS}/{created.id}")
@@ -920,6 +925,8 @@ async def test_delete_session_triggers_kill_and_removes_rows(
     # 沙箱已 kill（manager 账本相位 + FakeSandbox 调用轨迹）
     assert agent_env.manager.stable_phase(str(session_key)) == "killed"
     assert agent_env.manager.get(str(session_key)) is None
+    sandbox = agent_env.sandboxes.get(str(session_key))
+    assert sandbox is not None and "kill" in sandbox.calls, "DELETE 未 kill 已 provision 沙箱"
 
     # 业务行已清理（会话行 + 挂在其下的消息/事件/run 行）
     for model, column in (
@@ -1002,9 +1009,11 @@ async def test_delete_session_stops_active_run_without_fk_error(
         )
         assert count == 0, f"{model.__tablename__} 未随会话删除"
 
-    # 沙箱 kill 已执行（FakeSandbox 调用轨迹 + 账本相位）
+    # 懒加载：纯聊天 run 从不实际使用沙箱——DELETE 走零网络摘除（无 provider 侧实例可 kill）
     sandbox = agent_env.sandboxes.get(str(session_key))
-    assert sandbox is not None and "kill" in sandbox.calls, "DELETE 未 kill 会话沙箱"
+    assert sandbox is not None and sandbox.calls == [], (
+        "纯聊天会话 DELETE 不应触发任何沙箱网络调用（懒加载零网络释放）"
+    )
     assert agent_env.manager.stable_phase(str(session_key)) == "killed"
 
     # 无 ERROR：孤儿 run 在清行后继续 emit 会撞 sessions 外键（旧实现的确凿症状）
@@ -1205,6 +1214,19 @@ async def test_sandbox_status_endpoint(async_client, agent_env) -> None:
     assert idle.cost_estimate is not None
 
     await _post_message(async_client, created.id, scripts.SIMPLE_USER_TEXT)
+    await _wait_run_idle(async_client, created.id)
+
+    still_none = SandboxStatus.model_validate(
+        _unwrap(await async_client.get(f"{SESSIONS}/{created.id}/sandbox"))
+    )
+    # 懒加载：纯聊天 run 不 provision——状态仍 none、无 sandbox_id
+    assert still_none.phase == "none"
+    assert still_none.sandbox_id is None
+    assert still_none.cost_estimate is not None
+
+    # 工具执行才触发懒 provision：带 ls 工具调用的剧本跑第二条消息 → 稳态 running
+    agent_env.set_model(ScriptedChatModel(steps=scripts.tool_loop_read_only()))
+    await _post_message(async_client, created.id, "列一下目录")
     await _wait_run_idle(async_client, created.id)
 
     running = SandboxStatus.model_validate(

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -24,7 +25,9 @@ from sqlalchemy.exc import IntegrityError
 
 from app.exception.diff import DiffAlreadyResolved
 from app.models import DiffReview
-from app.sandbox.git import PATCH_LIMIT_BYTES, WorkspaceFileDiff
+from app.sandbox.base import SandboxProvider
+from app.sandbox.git import PATCH_LIMIT_BYTES, GitWorkspaceError, WorkspaceFileDiff
+from app.sandbox.manager import SandboxManager
 from app.services import diff_service
 from app.services.diff_service import (
     DiffService,
@@ -33,6 +36,7 @@ from app.services.diff_service import (
     _with_system_note,
     build_rework_message,
 )
+from test.support.fake_sandbox import FakeSandbox
 
 NOW = datetime(2026, 10, 21, 12, 0, tzinfo=UTC)
 
@@ -330,6 +334,9 @@ async def test_ensure_baseline_conflict_reuses_committed_row(
         layout=SimpleNamespace(root="/ws", is_repo=True, head="a" * 40)
     )
     cast(Any, service)._live_client = lambda session_id: object()  # noqa: ARG005
+    # 懒加载守卫：本用例聚焦唯一约束兜底分支，provision 判据恒真（真值由
+    # `test_ensure_baseline_requires_live_sandbox` 与懒加载用例覆盖）
+    cast(Any, service)._has_provisioned_sandbox = lambda session_id: True  # noqa: ARG005
 
     snapshot = await service.ensure_baseline(str(uuid.uuid4()))
 
@@ -338,3 +345,24 @@ async def test_ensure_baseline_conflict_reuses_committed_row(
     assert calls["n"] == 3
     assert factory.sessions[1].added  # 插入尝试确实发生（随后撞唯一约束）
     assert factory.sessions[1].rolled_back is True
+
+
+async def test_live_client_rejects_unprovisioned_sandbox(tmp_path: Path) -> None:
+    """P2-3：verdict/直接调用方对未 provision 实例诚实报错——零网络，不 provision 空沙箱。"""
+    created: list[FakeSandbox] = []
+
+    def factory(provider: SandboxProvider, session_id: str) -> FakeSandbox:  # noqa: ARG001
+        sandbox = FakeSandbox(root=tmp_path, provider=provider, session_id=session_id)
+        created.append(sandbox)
+        return sandbox
+
+    manager = SandboxManager(factory=factory, idle_pause_seconds=60)
+    session_id = str(uuid.uuid4())
+    manager.ensure_lazy(session_id, provider="bailian")
+
+    service = DiffService(cast(Any, None), pipeline=cast(Any, _BoomPipeline()), manager=manager)
+    with pytest.raises(GitWorkspaceError) as excinfo:
+        cast(Any, service)._live_client(session_id)
+
+    assert "尚未 provision" in str(excinfo.value)
+    assert created[0].calls == []  # 零沙箱调用：未触发任何 provision

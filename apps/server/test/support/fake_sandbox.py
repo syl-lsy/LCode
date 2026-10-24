@@ -127,6 +127,7 @@ class FakeSandbox(LcodeSandbox):
         fail_create: bool = False,
         fail_pause: bool = False,
         fail_kill: bool = False,
+        fail_adopt: bool = False,
         real_exec_timeout_seconds: float | None = 60.0,
     ) -> None:
         super().__init__(session_id=session_id)
@@ -153,6 +154,7 @@ class FakeSandbox(LcodeSandbox):
         self._fail_create = fail_create
         self._fail_pause = fail_pause
         self._fail_kill = fail_kill
+        self._fail_adopt = fail_adopt
         self._real_exec_timeout_seconds = real_exec_timeout_seconds
 
     # ------------------------------------------------------------------ 生命周期
@@ -177,6 +179,21 @@ class FakeSandbox(LcodeSandbox):
             raise SandboxUnavailable("剧本设定：创建沙箱失败")
         self.state.created = True
         self._set_sandbox_id(self._configured_id)
+        self._mark_resumed()
+
+    def adopt(self, sandbox_id: str) -> None:
+        """按持久 id 重连（S3）：记录调用轨迹并把实例 id 换成被 adopt 的 id。
+
+        语义 = 沙箱已在 provider 侧存在：置 `created=True`（后续命令可执行）；`fail_adopt`
+        剧本抛 `SandboxUnavailable`（模拟「持久 id 已被回收」→ manager 转重建路径）。
+        """
+        self.calls.append("adopt")
+        if self._fail_adopt:
+            self.state.unavailable = True
+            raise SandboxUnavailable("剧本设定：adopt 失败（沙箱不存在或已被回收）")
+        self.state.created = True
+        self._set_sandbox_id(sandbox_id)
+        self._mark_resumed()
 
     def pause(self) -> None:
         self.calls.append("pause")
@@ -184,6 +201,7 @@ class FakeSandbox(LcodeSandbox):
             self.state.unavailable = True
             raise SandboxUnavailable("剧本设定：pause 失败")
         self.state.paused = True
+        self._mark_paused()
 
     def resume(self) -> None:
         self.calls.append("resume")
@@ -191,6 +209,7 @@ class FakeSandbox(LcodeSandbox):
             raise SandboxUnavailable("剧本设定：沙箱不存在，无法恢复")
         self.state.paused = False
         self.state.unavailable = False
+        self._mark_resumed()
 
     def kill(self) -> None:
         self.calls.append("kill")
@@ -201,11 +220,16 @@ class FakeSandbox(LcodeSandbox):
 
     def status(self) -> SandboxStatus:
         self.calls.append("status")
+        if not self.state.created:
+            # 懒加载未 provision：与真适配器同口径——none 相位、不可用、无 id
+            return SandboxStatus(
+                sandbox_id=None, phase="none", available=False, detail="尚未 provision（懒加载）"
+            )
         if self.state.killed:
             return SandboxStatus(
                 sandbox_id=self.id, phase="killed", available=False, detail="已终止"
             )
-        if not self.state.created or self.state.unavailable:
+        if self.state.unavailable:
             return SandboxStatus(
                 sandbox_id=self.id,
                 phase="crashed",

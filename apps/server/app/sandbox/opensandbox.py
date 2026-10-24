@@ -12,9 +12,11 @@
 - `_read_file` → `SandboxSync.files.read_bytes(path)`；
 - `create` → `SandboxSync.create(image, timeout=timedelta(…),
   connection_config=ConnectionConfigSync(...))`；
-- `pause`/`resume`/`kill` → `SandboxSync.pause()` / **类方法**
-  `SandboxSync.resume(sandbox_id, connection_config=…)`（返回新实例，
-  端点在 pause/resume 间可能变化）/ `SandboxSync.kill()`；
+- `pause`/`resume`/`adopt`/`kill` → `SandboxSync.pause()` / **类方法**
+  `SandboxSync.resume(sandbox_id, connection_config=…)`（**服务端 resume 操作**，paused
+  语义）/ adopt 走**类方法** `SandboxSync.connect(sandbox_id, connection_config=…)`
+  （「Connect to an existing sandbox instance by ID」，无状态迁移——running 沙箱直连，
+  见 sync/sandbox.py:824 vs :916）/ `SandboxSync.kill()`；
 - `status` → `SandboxSync.get_info().status.state`（RUNNING/PENDING/PAUSED/TERMINATED）。
 
 流式能力（U4 未决）：本适配器**已按流式接线**——`ExecutionHandlersSync.on_stdout/on_stderr`
@@ -85,6 +87,7 @@ class OpenSandboxSandbox(LcodeSandbox):
         image: str | None = None,
         sandbox_factory: Callable[..., Any] | None = None,
         resume_factory: Callable[..., Any] | None = None,
+        connect_factory: Callable[..., Any] | None = None,
         default_timeout_seconds: int = DEFAULT_SANDBOX_TIMEOUT_SECONDS,
     ) -> None:
         super().__init__(session_id=session_id)
@@ -94,9 +97,11 @@ class OpenSandboxSandbox(LcodeSandbox):
         # 显式构造参数优先于 settings（都为空时由 _require_image 在 create 时 fail-fast）
         self._image = (image or cfg.opensandbox_image).strip()
         self._default_timeout_seconds = default_timeout_seconds
-        # 可注入替身：`SandboxSync.create` / 类方法 `SandboxSync.resume`
+        # 可注入替身：`SandboxSync.create` / 类方法 `SandboxSync.resume`（服务端 resume）
+        # / 类方法 `SandboxSync.connect`（按 id 连接，无状态迁移）
         self._sandbox_factory: Callable[..., Any] = sandbox_factory or SandboxSync.create
         self._resume_factory: Callable[..., Any] = resume_factory or SandboxSync.resume
+        self._connect_factory: Callable[..., Any] = connect_factory or SandboxSync.connect
         self._handle: Any = None
 
     # ------------------------------------------------------------------ 凭证与连接
@@ -151,6 +156,7 @@ class OpenSandboxSandbox(LcodeSandbox):
             raise _translate("创建 OpenSandbox 沙箱", exc, api_key_env=self._api_key_env) from exc
         self._handle = handle
         self._set_sandbox_id(str(handle.id))
+        self._mark_resumed()
 
     def pause(self) -> None:
         handle = self._require_handle()
@@ -158,6 +164,7 @@ class OpenSandboxSandbox(LcodeSandbox):
             handle.pause()
         except Exception as exc:  # noqa: BLE001
             raise _translate("暂停 OpenSandbox 沙箱", exc, api_key_env=self._api_key_env) from exc
+        self._mark_paused()
 
     def resume(self) -> None:
         """恢复：`SandboxSync.resume` 是**类方法**且返回新实例（端点可能变）→ 换句柄。"""
@@ -168,6 +175,29 @@ class OpenSandboxSandbox(LcodeSandbox):
             )
         except Exception as exc:  # noqa: BLE001
             raise _translate("恢复 OpenSandbox 沙箱", exc, api_key_env=self._api_key_env) from exc
+        self._mark_resumed()
+
+    def adopt(self, sandbox_id: str) -> None:
+        """按已存在的沙箱 id 重连（S3）：**类方法 `SandboxSync.connect`** 按 id 取句柄。
+
+        为什么不走 `resume`：resume 是**服务端状态迁移**（paused 语义，会对 running
+        沙箱调 `resume_sandbox`——行为未定义且很可能被拒）；adopt 的最常见场景是进程
+        重启后沙箱仍处 running 态，必须用无状态迁移的 connect 直连（SDK 源码
+        `sync/sandbox.py` :824 connect vs :916 resume 的文档语义）。连接配置同源
+        （`_connection_config`）。与 resume 的差别只在 id 来源——resume 用**本实例已
+        provision 的 id**（前置校验 `_require_id`），adopt 用调用方传入的持久 id
+        （`sessions.sandbox_id`），因此无需先 provision。
+        """
+        if self._handle is not None:
+            raise SandboxLifecycleError("OpenSandbox 沙箱已 provision（adopt 与 create 互斥）")
+        try:
+            self._handle = self._connect_factory(
+                sandbox_id, connection_config=self._connection_config()
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise _translate("重连 OpenSandbox 沙箱", exc, api_key_env=self._api_key_env) from exc
+        self._set_sandbox_id(sandbox_id)
+        self._mark_resumed()
 
     def kill(self) -> None:
         handle = self._require_handle()

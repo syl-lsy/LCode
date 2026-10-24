@@ -54,10 +54,18 @@ def safe_env_var_name(name: str) -> str:
 
 
 class CommonSettings(BaseSettingsWithEnv):
-    """通用配置：环境标识（日志级别已迁往 `LogSettings.level`，env 键名 `LOG_LEVEL` 不变）。"""
+    """通用配置：环境标识 + P0 固定本地用户（日志级别已迁往 `LogSettings.level`）。
+
+    `local_user_id` 是 **P0 单用户阶段**的当前用户标识（`dependencies.get_current_user_id`
+    的唯一读取处，P2 鉴权中间件届时替换该依赖）。它与写入侧同源：业务行（sessions /
+    approvals / runs…）的 `user_id` 取会话行的 DB 默认值 `'local'`，因此本项默认值必须
+    同为 `'local'`——改这里而不迁移存量行会让归属过滤把既有数据全部挡在外面。
+    """
 
     environment: str = "development"
     """部署环境；`production` 时隐藏 /docs、/redoc、/openapi.json（基座口径）。"""
+
+    local_user_id: str = "local"  # LOCAL_USER_ID：P0 当前用户（须与存量行的 user_id 一致）
 
 
 # ---------------------------------------------------------------- WEB_

@@ -175,6 +175,39 @@ def test_bailian_non_git_input_baseline(bailian_sandbox: LcodeSandbox) -> None:
     assert "lcode-baseline/round-0" in verify.output
 
 
+@pytest.mark.requires_sandbox
+def test_bailian_restart_reconnect_by_id() -> None:
+    """S3 adopt 真沙箱版：create → 记 id → 全新适配器按 id adopt → 文件仍在。
+
+    模拟进程重启：第一只实例只负责 create + 写文件，**不 kill**（沙箱留在 provider 侧，
+    靠 timeout 到期自然回收）；第二只全新适配器经 `adopt(sandbox_id)` 重连同一沙箱
+    （e2b 语义：running 直连 / paused 自动恢复并刷新 timeout）。清理时只 kill 一次
+    （重连实例与原实例指向同一沙箱，双重 kill 会报「不存在」）。
+    """
+    _skip_unless(_bailian_ready())
+    first = BailianSandbox(default_timeout_seconds=900)
+    adopted: BailianSandbox | None = None
+    try:
+        first.create(timeout_seconds=900)
+        uploads = first.upload_files([("lcode-adopt.txt", b"adopt-me\n")])
+        assert uploads[0].error is None
+        sandbox_id = first.id
+
+        adopted = BailianSandbox(default_timeout_seconds=900)
+        adopted.adopt(sandbox_id)
+        assert adopted.id == sandbox_id
+
+        downloads = adopted.download_files(["lcode-adopt.txt"])
+        assert downloads[0].error is None
+        assert downloads[0].content == b"adopt-me\n"
+    finally:
+        victim = adopted if adopted is not None else first
+        try:
+            victim.kill()
+        except Exception:  # noqa: BLE001 —— 清理失败如实提示，不掩盖测试结果
+            print(f"[cleanup] 沙箱 kill 失败，可能需要控制台手工终止：{victim.id}")
+
+
 def test_bailian_missing_key_raises_configuration_error_without_remote_call(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -222,6 +255,38 @@ def test_opensandbox_smoke() -> None:
             client.kill()
         except Exception:  # noqa: BLE001
             print(f"[cleanup] OpenSandbox kill 失败，可能需要手工终止：{client.id}")
+
+
+@pytest.mark.requires_sandbox_opensandbox
+def test_opensandbox_restart_reconnect_by_id() -> None:
+    """S3 adopt 真沙箱版（评审项 1 的真回归锁）：create → 记 id → 全新适配器按 id adopt → 文件仍在。
+
+    adopt 走 `SandboxSync.connect`（按 id 连接，无状态迁移）——对 **running** 态沙箱
+    重连（进程重启后最常见的形态）；resume 的服务端 paused 语义不在本用例路径上。
+    清理时只 kill 一次（重连实例与原实例指向同一沙箱）。
+    """
+    _skip_unless(_opensandbox_ready())
+    first = OpenSandboxSandbox(settings=sandbox_settings, default_timeout_seconds=900)
+    adopted: OpenSandboxSandbox | None = None
+    try:
+        first.create(timeout_seconds=900)
+        uploads = first.upload_files([("lcode-adopt.txt", b"adopt-me\n")])
+        assert uploads[0].error is None
+        sandbox_id = first.id
+
+        adopted = OpenSandboxSandbox(settings=sandbox_settings, default_timeout_seconds=900)
+        adopted.adopt(sandbox_id)
+        assert adopted.id == sandbox_id
+
+        downloads = adopted.download_files(["lcode-adopt.txt"])
+        assert downloads[0].error is None
+        assert downloads[0].content == b"adopt-me\n"
+    finally:
+        victim = adopted if adopted is not None else first
+        try:
+            victim.kill()
+        except Exception:  # noqa: BLE001 —— 清理失败如实提示，不掩盖测试结果
+            print(f"[cleanup] OpenSandbox kill 失败，可能需要手工终止：{victim.id}")
 
 
 # --------------------------------------------------------------------------- 配置面

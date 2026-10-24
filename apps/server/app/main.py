@@ -75,12 +75,13 @@ async def idle_sweeper(manager: SandboxManager) -> None:
 
     到阈值且无活跃 run 才 pause 的判定在 `SandboxManager.evaluate_idle`（Q3：run 活跃
     期间永不暂停）；本循环只负责节拍，单轮异常不终止循环（pause 失败已由 manager 记
-    日志标 crashed）。
+    日志标 crashed）。评估含 provider 侧 pause（同步网络调用）：经 `asyncio.to_thread`
+    卸载（沙箱健壮性 S1），不占事件循环。
     """
     while True:
         await asyncio.sleep(IDLE_SWEEP_INTERVAL_S)
         try:
-            manager.evaluate_idle()
+            await asyncio.to_thread(manager.evaluate_idle)
         except Exception as exc:  # noqa: BLE001 —— 单轮清扫失败不终止循环
             BusinessLog(
                 message="沙箱空闲清扫单轮失败（循环继续）",
@@ -124,7 +125,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         with contextlib.suppress(asyncio.CancelledError):
             await sweeper
         with contextlib.suppress(Exception):
-            manager.shutdown()  # 单会话 pause 失败已在 manager 内记账（crashed），不阻断关停
+            # pause 是同步网络调用：卸到工作线程执行（沙箱健壮性 S1）；单会话 pause
+            # 失败已在 manager 内记账（crashed），不阻断关停
+            await asyncio.to_thread(manager.shutdown)
         with contextlib.suppress(Exception):
             await teardown_postgres_checkpointer(checkpointer_saver)
         await dispose_engine()

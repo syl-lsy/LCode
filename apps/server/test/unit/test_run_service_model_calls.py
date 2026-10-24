@@ -9,8 +9,12 @@ integration/test_rest_api.py 覆盖。
 - 一次模型调用一行（translator 记录逐条映射）；
 - role 映射：main / general-purpose → main，explorer/coder/reviewer 同名，未知与 None
   → main（role 永不为 NULL）；
-- error 路径必定追加恰好一条 error 残差行，全部行 token 之和 == outcome.usage；
-- 正常路径（行集合计 == outcome.usage）不产生多余对账行；
+- **对账基准与逐次记账同源**：残差 = translator.usage_totals − 行集合计（不再是
+  `outcome.usage`——runtime 单窗口在并行子智能体交错流式时会失真，M4 前置 D5）；
+- error 路径必定追加恰好一条 error 残差行（本段残差恒为 0：行集已同源），全部行
+  token 之和 == translator.usage_totals；`outcome.usage` 只作运行诊断；
+- 正常路径（行集合计 == translator 累计）不产生多余对账行；
+- 跨段终态 usage_totals = 既往段落合计 + 本段 translator 累计；
 - 注册表解析失败回退 launch.model 并留 warning，不丢行。
 """
 
@@ -69,9 +73,27 @@ def _record(
     )
 
 
+@dataclass(frozen=True)
+class _FakeTranslator:
+    """translator 的用量投影：`usage_totals` 与逐次记账快照同源（Σ records）。"""
+
+    records: tuple[ModelCallRecord, ...]
+
+    @property
+    def usage_totals(self) -> Usage:
+        return Usage(
+            input_tokens=sum(record.input_tokens for record in self.records),
+            output_tokens=sum(record.output_tokens for record in self.records),
+        )
+
+
 @dataclass
 class _FakeSink:
-    """假 sink：`finish` 记序并留存 usage_totals，`model_calls` 直出 translator 记账快照。"""
+    """假 sink：`finish` 记序并留存 usage_totals，`model_calls`/`translator` 直出记账快照。
+
+    `finish` 的 `usage_offset` 语义与生产侧一致：既往段落合计 + **收口后**的本段
+    translator 累计（unit 层没有在飞消息，故本段累计即 records 合计）。
+    """
 
     records: tuple[ModelCallRecord, ...]
     order: list[str]
@@ -79,10 +101,22 @@ class _FakeSink:
     usage_totals: Usage | None = None
 
     async def finish(
-        self, phase: str, *, error: Any = None, usage_totals: Usage | None = None
+        self, phase: str, *, error: Any = None, usage_offset: Usage | None = None
     ) -> None:
         self.order.append("finish")
-        self.usage_totals = usage_totals
+        if phase != "finished":
+            self.usage_totals = None
+            return
+        segment = self.translator.usage_totals
+        offset = usage_offset if usage_offset is not None else Usage()
+        self.usage_totals = Usage(
+            input_tokens=segment.input_tokens + offset.input_tokens,
+            output_tokens=segment.output_tokens + offset.output_tokens,
+        )
+
+    @property
+    def translator(self) -> _FakeTranslator:
+        return _FakeTranslator(self.records)
 
     @property
     def model_calls(self) -> tuple[ModelCallRecord, ...]:
@@ -216,7 +250,13 @@ async def test_finalize_maps_unknown_and_none_role_to_main(monkeypatch: Any) -> 
 
 
 async def test_finalize_error_path_adds_single_residual_error_row(monkeypatch: Any) -> None:
-    """error：已完成调用不重复计，残差恰好补一条 error 行；全部行之和 == outcome.usage。"""
+    """error：已完成调用不重复计，恒补一条 error 行（同源基准下残差为 0，不再凭 outcome 造数）。
+
+    M4 前置 D5：对账基准切到 `translator.usage_totals` 后，已完成调用已覆盖本段全部
+    用量 → 残差行 token = 0；该行的语义是「本 run 以失败收场」的审计标记（status/
+    error_type/latency），不承担补 token 的职责。`outcome.usage`（runtime 单窗口）
+    只作运行诊断，留 40/20 也不得改写行集。
+    """
     order: list[str] = []
     entries = _collect(monkeypatch, order)
     sink = _FakeSink(
@@ -245,17 +285,17 @@ async def test_finalize_error_path_adds_single_residual_error_row(monkeypatch: A
     error_rows = [entry for entry in entries if entry.status == "error"]
     assert len(error_rows) == 1
     residual = error_rows[0]
-    assert (residual.input_tokens, residual.output_tokens) == (10, 8)  # 40-30 / 20-12
+    assert (residual.input_tokens, residual.output_tokens) == (0, 0)  # 同源基准：残差恒 0
     assert residual.error_type == "model_error"
     assert residual.latency_ms == 500
     assert residual.role == "main" and residual.agent_id is None
-    # 守恒：已完成调用（10/5、20/7）+ 残差（10/8）= run 总量（40/20）
-    assert sum(entry.input_tokens for entry in entries) == 40
-    assert sum(entry.output_tokens for entry in entries) == 20
+    # 守恒：行集合计 == translator 累计（30/12），不受 outcome.usage（40/20）影响
+    assert sum(entry.input_tokens for entry in entries) == 30
+    assert sum(entry.output_tokens for entry in entries) == 12
 
 
 async def test_finalize_normal_path_adds_no_reconciliation_row(monkeypatch: Any) -> None:
-    """正常路径：行集合计 == outcome.usage → 不产生多余对账行。"""
+    """正常路径：行集合计 == translator 累计 → 不产生多余对账行。"""
     order: list[str] = []
     entries = _collect(monkeypatch, order)
     sink = _FakeSink(
@@ -276,15 +316,36 @@ async def test_finalize_normal_path_adds_no_reconciliation_row(monkeypatch: Any)
 
     assert len(entries) == 2
     assert all(entry.status == "success" for entry in entries)
-    # 终态事件 usage_totals = prior（缺省 0）+ 本段 usage
+    # 终态事件 usage_totals = prior（缺省 0）+ 本段 translator 累计
     assert sink.usage_totals == Usage(input_tokens=30, output_tokens=12)
 
 
+async def test_finalize_ignores_diagnostic_outcome_usage_for_cost_rows(monkeypatch: Any) -> None:
+    """`outcome.usage` 只作运行诊断：与行集不同源时，行集/终态事件都不得被它改写。"""
+    order: list[str] = []
+    entries = _collect(monkeypatch, order)
+    sink = _FakeSink(
+        records=(_record(message_id="m1", input_tokens=10, output_tokens=5),),
+        order=order,
+    )
+    outcome = RunOutcome(
+        status="finished",
+        usage=Usage(input_tokens=99, output_tokens=88),  # 单窗口失真（M4 fan_out 场景）
+        error=None,
+        duration_ms=1,
+    )
+
+    await _service(ModelRegistry.load())._finalize(_launch(), outcome, cast(Any, sink))
+
+    assert [(entry.input_tokens, entry.output_tokens) for entry in entries] == [(10, 5)]
+    assert sink.usage_totals == Usage(input_tokens=10, output_tokens=5)
+
+
 async def test_finalize_usage_totals_adds_prior_segments(monkeypatch: Any) -> None:
-    """跨段合计：终态 usage_totals = 既往段落合计 + 本段 usage（resume 前的段落不少计）。
+    """跨段合计：终态 usage_totals = 既往段落合计 + 本段 translator 累计（resume 前不少计）。
 
     D4 单元级锁定：prior=(100, 50) + 本段 (10, 5) → sink.finish 收到 (110, 55)。
-    早先只有 integration 覆盖该语义，unit 层缺失会让「只算最后一段」的回归漏网。
+    本段用量由 translator 在补收在飞消息后自行计入（sink 以 `usage_offset` 提交基数）。
     """
     order: list[str] = []
     entries = _collect(monkeypatch, order, prior=Usage(input_tokens=100, output_tokens=50))

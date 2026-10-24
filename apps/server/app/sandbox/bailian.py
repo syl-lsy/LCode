@@ -30,8 +30,10 @@
    访问域名，不是配置项。
 3. **resume 走 `handle.connect()`**：e2b 2.31.0 没有 `resume()` 方法，
    `connect()` 的语义是"连接（paused 则自动恢复）并刷新 timeout"
-   （`sandbox_sync/main.py::connect` 文档串）。跨进程恢复（服务重启后用 sandbox_id
-   重连）不在 M2 范围，见 manager 的关停口径。
+   （`sandbox_sync/main.py::connect` 文档串）。跨进程重连（S3 adopt）走**类方法**
+   `Sandbox.connect(sandbox_id, ...)`（`.venv` 内 `sandbox_sync/main.py` 的
+   `@staticmethod connect` → `_cls_connect_sandbox`）：同一连接参数面 + 按 id 取回
+   handle，paused 沙箱自动恢复并刷新 timeout。
 
 测试缝隙：`sandbox_factory` 可注入假 SDK 工厂（unit 层不连真沙箱）；真冒烟走
 `integration/test_sandbox_real.py` 的 `requires_sandbox` 标记。SDK 句柄以 `Any` 承载
@@ -90,6 +92,7 @@ class BailianSandbox(LcodeSandbox):
         session_id: str | None = None,
         settings: SandboxSettings | None = None,
         sandbox_factory: Callable[..., Any] | None = None,
+        connect_factory: Callable[..., Any] | None = None,
         default_timeout_seconds: int = DEFAULT_SANDBOX_TIMEOUT_SECONDS,
     ) -> None:
         super().__init__(session_id=session_id)
@@ -99,8 +102,9 @@ class BailianSandbox(LcodeSandbox):
         self._api_url = cfg.bailian_api_url
         self._aliyun_uid = cfg.bailian_aliyun_uid
         self._default_timeout_seconds = default_timeout_seconds
-        # `e2b.Sandbox.create` 的可注入替身（unit 层不连真沙箱）
+        # `e2b.Sandbox.create` / 类方法 `e2b.Sandbox.connect` 的可注入替身（unit 层不连真沙箱）
         self._sandbox_factory: Callable[..., Any] = sandbox_factory or Sandbox.create
+        self._connect_factory: Callable[..., Any] = connect_factory or Sandbox.connect
         self._handle: Any = None
 
     # ------------------------------------------------------------------ 凭证（NFR-004）
@@ -116,7 +120,11 @@ class BailianSandbox(LcodeSandbox):
             )
         return value
 
-    def _create_kwargs(self, *, timeout_seconds: int | None) -> dict[str, Any]:
+    def _connection_kwargs(self) -> dict[str, Any]:
+        """连接参数（create 与 adopt 共用面；**不含** template/timeout 这类仅创建期参数）。
+
+        adopt 复用同一套凭证/端点口径（NFR-004 的读取与消息纪律同 create）。
+        """
         if not self._api_url:
             # 静默省略会让 e2b 落到默认公网端点，最终报「鉴权被拒」——把排障引向错误方向
             raise SandboxConfigurationError(
@@ -124,9 +132,7 @@ class BailianSandbox(LcodeSandbox):
                 "旧配置键 SANDBOX_BAILIAN_DOMAIN 已废弃）"
             )
         api_key = self._require_api_key()
-        kwargs: dict[str, Any] = {
-            "template": self._template or None,  # 空串 → e2b 默认模板（spike 定模板后填值）
-            "timeout": timeout_seconds or self._default_timeout_seconds,
+        return {
             # 官方口径：api_key 仅作格式占位，服务端不做业务鉴权（见模块 docstring 细节 1）
             "api_key": f"e2b_{self._aliyun_uid}" if self._aliyun_uid else "e2b_0",
             "headers": {"Authorization": f"Bearer {api_key}"},
@@ -135,6 +141,15 @@ class BailianSandbox(LcodeSandbox):
             # 完整 URL 交给 api_url；绝不传 domain（会被拼成 https://api.<domain>）
             "api_url": self._api_url,
         }
+
+    def _create_kwargs(self, *, timeout_seconds: int | None) -> dict[str, Any]:
+        kwargs = self._connection_kwargs()
+        kwargs.update(
+            {
+                "template": self._template or None,  # 空串 → e2b 默认模板（spike 定模板后填值）
+                "timeout": timeout_seconds or self._default_timeout_seconds,
+            }
+        )
         return kwargs
 
     # ---------------------------------------------------------------------- 生命周期
@@ -150,6 +165,26 @@ class BailianSandbox(LcodeSandbox):
             raise _translate("创建百炼沙箱", exc, api_key_env=self._api_key_env) from exc
         self._handle = handle
         self._set_sandbox_id(str(handle.sandbox_id))
+        self._mark_resumed()
+
+    def adopt(self, sandbox_id: str) -> None:
+        """按已存在的沙箱 id 重连（S3）：类方法 `Sandbox.connect(sandbox_id, ...)`。
+
+        连接参数与 create 同源（`_connection_kwargs`，不含 template/timeout）；e2b 语义：
+        paused 沙箱自动恢复并刷新 timeout（模块 docstring 细节 3）。不存在/不可达经
+        `_translate` 归一为 `SandboxUnavailable`（调用方转重建路径）。
+        """
+        if self._handle is not None:
+            raise SandboxLifecycleError("百炼沙箱已 provision（adopt 与 create 互斥）")
+        try:
+            handle = self._connect_factory(sandbox_id, **self._connection_kwargs())
+        except SandboxError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise _translate("重连百炼沙箱", exc, api_key_env=self._api_key_env) from exc
+        self._handle = handle
+        self._set_sandbox_id(sandbox_id)
+        self._mark_resumed()
 
     def pause(self) -> None:
         handle = self._require_handle()
@@ -157,6 +192,7 @@ class BailianSandbox(LcodeSandbox):
             handle.pause()
         except Exception as exc:  # noqa: BLE001
             raise _translate("暂停百炼沙箱", exc, api_key_env=self._api_key_env) from exc
+        self._mark_paused()
 
     def resume(self) -> None:
         handle = self._require_handle()
@@ -164,6 +200,7 @@ class BailianSandbox(LcodeSandbox):
             handle.connect()  # e2b 语义：paused 则自动恢复并刷新 timeout
         except Exception as exc:  # noqa: BLE001
             raise _translate("恢复百炼沙箱", exc, api_key_env=self._api_key_env) from exc
+        self._mark_resumed()
 
     def kill(self) -> None:
         handle = self._require_handle()

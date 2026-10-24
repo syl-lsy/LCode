@@ -13,6 +13,10 @@
 错误码（契约端点 errors）：未知审批 → 404 `APPROVAL_NOT_FOUND`；重复决策 →
 409 `APPROVAL_ALREADY_RESOLVED`；edit 缺 edited_args / respond 缺 feedback →
 422 `INVALID_ARGUMENT`（契约 DTO 与 service 双层守门）。
+
+归属（安全 P2-3）：三个端点都经 `CurrentUserIdDep` 取当前用户（P0 固定本地用户，
+P2 鉴权中间件替换该依赖），service 层按 `user_id` 过滤——非归属的审批与不存在同码
+404 `APPROVAL_NOT_FOUND`（不泄漏 id 是否存在）。
 """
 
 from typing import Annotated, Literal
@@ -20,7 +24,7 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.dependencies import EventPipelineDep, RunServiceDep, get_db
+from app.dependencies import CurrentUserIdDep, EventPipelineDep, RunServiceDep, get_db
 from app.services.approval_service import ApprovalService
 from lcode_contracts.rest import (
     ApprovalDecisionAck,
@@ -62,20 +66,26 @@ ApprovalServiceDep = Annotated[ApprovalService, Depends(get_approval_service)]
 @router.get("", response_model=ApprovalPage, summary="审批列表（status=pending 恢复挂起卡片）")
 async def list_approvals(
     service: ApprovalServiceDep,
+    user_id: CurrentUserIdDep,
     status: Annotated[
         ApprovalStatusQuery | None,
         Query(description="按状态过滤（AC-006-5 刷新恢复用 status=pending）"),
     ] = None,
     session_id: Annotated[str | None, Query(description="按会话过滤")] = None,
 ) -> ApprovalPage:
-    """审批列表：最新在前；`status=pending&session_id=` 是刷新恢复的入口。"""
-    return await service.list_approvals(status=status, session_id=session_id)
+    """审批列表：最新在前；`status=pending&session_id=` 是刷新恢复的入口。
+
+    只返回当前用户的审批（`user_id` 强制条件，跨用户不可见）。
+    """
+    return await service.list_approvals(user_id=user_id, status=status, session_id=session_id)
 
 
 @router.get("/{approval_id}", response_model=ApprovalItem, summary="审批详情")
-async def get_approval(approval_id: str, service: ApprovalServiceDep) -> ApprovalItem:
-    """审批详情（404 `APPROVAL_NOT_FOUND`）。"""
-    return await service.get_approval(approval_id)
+async def get_approval(
+    approval_id: str, service: ApprovalServiceDep, user_id: CurrentUserIdDep
+) -> ApprovalItem:
+    """审批详情（404 `APPROVAL_NOT_FOUND`；非归属同样 404）。"""
+    return await service.get_approval(approval_id, user_id=user_id)
 
 
 @router.post(
@@ -87,9 +97,13 @@ async def decide_approval(
     approval_id: str,
     payload: ApprovalDecisionRequest,
     service: ApprovalServiceDep,
+    user_id: CurrentUserIdDep,
 ) -> ApprovalDecisionAck:
-    """四决策（approve/edit/reject/respond）→ 落行 → 广播 → （全部齐备时）resume。"""
-    approval, run_id = await service.decide(approval_id, payload)
+    """四决策（approve/edit/reject/respond）→ 落行 → 广播 → （全部齐备时）resume。
+
+    非归属审批（审批行或关联 run/会话不属于当前用户）→ 404 `APPROVAL_NOT_FOUND`。
+    """
+    approval, run_id = await service.decide(approval_id, payload, user_id=user_id)
     return ApprovalDecisionAck(approval=approval, run_id=run_id)
 
 

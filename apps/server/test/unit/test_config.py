@@ -36,8 +36,10 @@ def _fresh[T: BaseSettings](settings_cls: type[T]) -> T:
 def test_common_settings_default(monkeypatch):
     """通用组（无前缀）：默认值直接生效（log_level 已迁往 LogSettings，见下方 LOG_ 组）。"""
     monkeypatch.delenv("ENVIRONMENT", raising=False)
+    monkeypatch.delenv("LOCAL_USER_ID", raising=False)
     settings = _fresh(CommonSettings)
     assert settings.environment == "development"
+    assert settings.local_user_id == "local"  # P0 固定本地用户（approvals 归属校验的读取侧）
     assert "log_level" not in CommonSettings.model_fields  # 防回流：日志级别只归 LOG_ 组
 
 

@@ -926,3 +926,31 @@ async def test_prepare_review_resumes_paused_sandbox(diff_env, async_client, db_
     assert review is not None
     assert review.round == 1
     assert diff_env.manager.stable_phase(session_id) == "running"
+
+
+async def test_prepare_review_skips_unprovisioned_sandbox(
+    diff_env, async_client, db_session
+) -> None:
+    """懒加载：纯聊天 run（沙箱从未实际使用）收口后 diff 车道整体短路——零沙箱调用。
+
+    未 provision 实例上跑 git 会经懒 provision 触发网络（形同虚设）——必须整体短路：
+    不建基线行、不建审查行、不发 diff_ready、零生命周期/命令调用。
+    """
+    detail = await create_session(async_client, title="纯聊天无 diff")
+    await db_session.commit()
+    diff_env.set_model(ScriptedChatModel(steps=scripts.simple_reply()))
+
+    response = await post_message(async_client, detail.id, "你好")
+    assert response.status_code == 200, response.text
+    await wait_run_state(async_client, detail.id, "idle")
+
+    sandbox = diff_env.sandboxes[detail.id]
+    assert sandbox.calls == []  # 零沙箱生命周期调用（create/adopt/pause/kill 均无）
+    assert sandbox.commands == []  # 零命令执行（含 diff 链 git 命令——车道已短路）
+    assert diff_env.manager.phase(detail.id) == "none"
+    assert diff_env.manager.open_usage_segment(detail.id) is None
+
+    assert await _baselines_of(db_session, detail.id) == []  # 无基线行
+    assert await _reviews_of(db_session, detail.id) == []  # 无审查行
+    rows = await events_of(db_session, detail.id)
+    assert event_payload(rows, "diff_ready") == []

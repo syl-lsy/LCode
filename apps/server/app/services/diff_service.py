@@ -36,6 +36,7 @@ verdict 在 emit 前显式 commit——事件永不引用未提交的业务事�
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
@@ -262,6 +263,11 @@ class DiffService(BaseService):
 
         `kind=head` 分支**不做任何 git 写**（AC-002-5）：只 `rev-parse HEAD` 记录对照点。
         非 git 与空仓库走 round-0 兜底基线（`[lcode-baseline] init` + tag round-0）。
+
+        S1 卸载口径（评审项 3）：`_live_client`（paused 时 resume 是 e2b connect 级别的
+        秒级网络调用）与沙箱内 git 命令都是同步 SDK 往返，整体经 `asyncio.to_thread`
+        在工作线程执行——本方法被 run 收口的 prepare_review 在主循环后台任务里调用，
+        不卸载会阻塞全部 SSE 流与请求。
         """
         key = _uuid_of(session_id)
         factory = self._factory()
@@ -270,16 +276,16 @@ class DiffService(BaseService):
             if existing is not None:
                 return _snapshot_of(existing)
 
-        client = self._live_client(session_id)
-        workspace = self._workspace(client)
-        layout = workspace.layout
-        if layout.is_repo and layout.head is not None:
-            snapshot = BaselineSnapshot(kind="head", ref="HEAD", commit=layout.head, round=0)
-            note = "git 输入：以输入仓库 HEAD 为起点（不做 git 写）"
-        else:
-            commit, tag = workspace.ensure_init_baseline()
-            snapshot = BaselineSnapshot(kind="init", ref=tag, commit=commit, round=0)
-            note = "非 git 输入：round-0 兜底基线提交"
+        if not self._has_provisioned_sandbox(session_id):
+            # 懒加载：未 provision（本会话从未实际执行过工具）→ 无沙箱可对照，明确报错
+            # 而不是经 `_baseline_probe` 的 git 命令触发 provision（收口车道不得触网）。
+            # run 收口路径（prepare_review）已先行短路，本守卫面向直接调用方。
+            raise GitWorkspaceError(
+                "会话沙箱尚未 provision（本会话从未实际执行过工具），无法建立基线",
+                detail=f"session={session_id}",
+            )
+
+        snapshot, note = await asyncio.to_thread(self._baseline_probe, session_id)
 
         async with factory() as session:
             # 并发/重入保护：两次收口同时补基线时只落一行（后到者复用先到者）
@@ -308,6 +314,27 @@ class DiffService(BaseService):
                 return _snapshot_of(again)
         return snapshot
 
+    def _baseline_probe(self, session_id: str) -> tuple[BaselineSnapshot, str]:
+        """（工作线程内执行）取会话沙箱并解析基线：git 输入只读 / 非 git 走 round-0 init。
+
+        同步实现，**只允许经 `asyncio.to_thread` 调用**（S1 卸载口径）——`_live_client`
+        的 paused→resume 与 `layout`/`ensure_init_baseline` 的沙箱 git 往返都是秒级
+        网络调用；note 与快照成对返回（落 `git_baselines.note` 的文案随分支不同）。
+        """
+        client = self._live_client(session_id)
+        workspace = self._workspace(client)
+        layout = workspace.layout
+        if layout.is_repo and layout.head is not None:
+            return (
+                BaselineSnapshot(kind="head", ref="HEAD", commit=layout.head, round=0),
+                "git 输入：以输入仓库 HEAD 为起点（不做 git 写）",
+            )
+        commit, tag = workspace.ensure_init_baseline()
+        return (
+            BaselineSnapshot(kind="init", ref=tag, commit=commit, round=0),
+            "非 git 输入：round-0 兜底基线提交",
+        )
+
     # ---------------------------------------------------------------- 就绪（run 收口）
 
     async def prepare_review(
@@ -322,20 +349,24 @@ class DiffService(BaseService):
         逐文件 patch 走 `PatchBudget`（单文件预估上限 + 单轮总量/文件数预算）：超限文件
         不拉正文、只留 `blob_ref`，并在 jsonb 里标 `patch_skipped`；被跳过的数量记 WARNING
         （不静默——审查面板会少一些可内联展开的文件）。
+
+        懒加载短路（bug 修复）：会话沙箱**未 provision**（纯聊天 run，从未实际使用）
+        时整体短路返回 None——diff 只在发生过工具执行的 run 才有意义，且绝不在收口
+        车道对未 provision 实例跑 git（那会经懒 provision 触发网络，形同虚设）。
         """
+        if not self._has_provisioned_sandbox(session_id):
+            return None
         snapshot = await self.ensure_baseline(session_id, user_id=user_id)
-        client = self._live_client(session_id)
-        workspace = self._workspace(client)
-        _ = workspace.layout  # 先解析一次（缓存；非仓库已在 ensure 阶段完成 init）
-        file_diffs = workspace.collect_diff(
-            snapshot.commit, budget=PatchBudget(max_patch_bytes=PATCH_LIMIT_BYTES)
+        # 沙箱 git 往返（add -A + numstat/name-status + 逐文件 patch）在工作线程执行（S1）
+        file_diffs, workspace_root = await asyncio.to_thread(
+            self._collect_diff_sync, session_id, snapshot.commit
         )
         if not file_diffs:
             return None
 
         self._log_patch_skips(session_id, file_diffs)
         files = [
-            _file_payload(entry, root=workspace.root, baseline_commit=snapshot.commit)
+            _file_payload(entry, root=workspace_root, baseline_commit=snapshot.commit)
             for entry in file_diffs
         ]
         additions_total = sum(int(entry["additions"]) for entry in files)
@@ -400,6 +431,22 @@ class DiffService(BaseService):
             )
         )
         return detail
+
+    def _collect_diff_sync(
+        self, session_id: str, baseline_commit: str
+    ) -> tuple[list[WorkspaceFileDiff], str]:
+        """（工作线程内执行）resolve client → 解析 layout → `add -A` + 逐文件 patch 收集。
+
+        同步实现，**只允许经 `asyncio.to_thread` 调用**（S1 卸载口径）；`root` 一并带回
+        （`_file_payload` 需要，且属工作区派生值，避免回主循环后再触属性面）。
+        """
+        client = self._live_client(session_id)
+        workspace = self._workspace(client)
+        _ = workspace.layout  # 先解析一次（缓存；非仓库已在 ensure 阶段完成 init）
+        file_diffs = workspace.collect_diff(
+            baseline_commit, budget=PatchBudget(max_patch_bytes=PATCH_LIMIT_BYTES)
+        )
+        return file_diffs, workspace.root
 
     async def _persist_review(
         self,
@@ -512,9 +559,11 @@ class DiffService(BaseService):
         commit" → 恒 500。现在 supersede 的 UPDATE 被行锁挡住，锁内复核看到「已被取代」
         → 直接 409 且**不做任何 git 写**。
 
-        代价：持锁期间有一次沙箱 git 往返（commit + tag + rev-parse，数十到数百毫秒）。
-        P0 单用户、并发面只有「同一会话的裁决 / run 收口」，可接受。git 先于 DB 提交，
-        最坏情况是 git 已推进而 DB 提交失败——重试走 tag 幂等分支自愈。
+        代价：持锁期间有一次沙箱 git 往返（commit + tag + rev-parse）。该往返已在
+        工作线程执行（S1 卸载，评审项 3——不阻塞事件循环），但 **DB 行锁仍跨 await
+        持有**（裁决事务边界不变）；P0 单用户、并发面只有「同一会话的裁决 / run 收口」，
+        可接受。git 先于 DB 提交，最坏情况是 git 已推进而 DB 提交失败——重试走 tag
+        幂等分支自愈。
 
         **rejected 的注记顺序**：返工是否会被「会话已有活动 run」挡住，在落行与发事件
         **之前**判定并拼进 feedback（事件一经发射不可变，事后追加只有重读详情的人能看到，
@@ -587,7 +636,7 @@ class DiffService(BaseService):
         await self._safe_emit_resolved(
             locked, feedback=locked.feedback, decided_by=DECIDED_BY_USER, now=now
         )
-        self._keep_worktree_editable(locked)
+        await self._keep_worktree_editable(locked)
         if (feedback or "").strip():
             await self._start_rework(locked, feedback or "")
         return _to_detail(locked)
@@ -617,18 +666,31 @@ class DiffService(BaseService):
         return active is not None
 
     async def _advance_baseline(self, row: DiffReview) -> BaselineCommit:
-        """accepted：沙箱内 commit（已暂存快照）+ tag `lcode-baseline/round-N` → 结果。"""
-        client = self._live_client(str(row.session_id))
-        workspace = self._workspace(client)
-        baseline = workspace.commit_baseline(row.round, note=f"diff review {row.id}")
+        """accepted：沙箱内 commit（已暂存快照）+ tag `lcode-baseline/round-N` → 结果。
+
+        git 往返（commit + tag + rev-parse）经 `asyncio.to_thread` 在工作线程执行
+        （S1 卸载，评审项 3）——verdict 是 HTTP 请求路径，不得在事件循环上做秒级
+        沙箱调用；DB 行锁仍跨 await 持有（裁决事务边界不变）。
+        """
+        baseline = await asyncio.to_thread(self._commit_baseline_sync, row)
         if not check_commit_sha(baseline.commit):  # pragma: no cover —— commit_baseline 已校验
             raise GitWorkspaceError("基线提交 sha 非法", detail=f"sha={baseline.commit!r}")
         return baseline
 
-    def _keep_worktree_editable(self, row: DiffReview) -> None:
-        """rejected 后撤销 diff 前的暂存（spike §4：`add -A` 之后 `reset`，工作区可编辑）。"""
+    def _commit_baseline_sync(self, row: DiffReview) -> BaselineCommit:
+        """（工作线程内执行）`_live_client`（可能 resume）+ 沙箱内 git commit/tag。"""
+        client = self._live_client(str(row.session_id))
+        workspace = self._workspace(client)
+        return workspace.commit_baseline(row.round, note=f"diff review {row.id}")
+
+    async def _keep_worktree_editable(self, row: DiffReview) -> None:
+        """rejected 后撤销 diff 前的暂存（spike §4：`add -A` 之后 `reset`，工作区可编辑）。
+
+        `_live_client`（可能 resume）与 `git reset` 都在工作线程执行（S1 卸载）；两段
+        失败隔离的日志口径保持不变（沙箱不可用 ≠ reset 失败）。
+        """
         try:
-            client = self._live_client(str(row.session_id))
+            client = await asyncio.to_thread(self._live_client, str(row.session_id))
         except SandboxError as exc:
             BusinessLog(
                 message="驳回后沙箱不可用，跳过 git reset（工作区暂存态保留）",
@@ -639,7 +701,7 @@ class DiffService(BaseService):
             return
         workspace = self._workspace(client)
         try:
-            workspace.unstage_all()
+            await asyncio.to_thread(workspace.unstage_all)
         except SandboxError as exc:
             BusinessLog(
                 message="驳回后 git reset 失败（工作区仍可编辑，仅暂存态残留）",
@@ -752,17 +814,38 @@ class DiffService(BaseService):
     def _factory(self) -> async_sessionmaker[AsyncSession]:
         return self._session_factory or get_session_factory()
 
+    def _has_provisioned_sandbox(self, session_id: str) -> bool:
+        """懒加载判据：会话存在**已 provision** 的沙箱实例（未 provision/无实例 = False）。
+
+        diff 只在发生过工具执行（provision 过）的 run 才有意义——对未 provision 实例
+        绝不做任何沙箱操作（git 命令会经懒 provision 触发网络，形同虚设，必须短路）。
+        """
+        if self._manager is None:
+            return False
+        client = self._manager.get(session_id)
+        return client is not None and client.provisioned
+
     def _workspace(self, client: LcodeSandbox) -> GitWorkspace:
         return GitWorkspace(client, workspace_dir=self._workspace_dir)
 
     def _live_client(self, session_id: str) -> LcodeSandbox:
-        """取会话沙箱（paused 先 resume）；不在册 → `GitWorkspaceError`（上层降级/500）。"""
+        """取会话沙箱（paused 先 resume）；不在册/未 provision → `GitWorkspaceError`。
+
+        懒加载守卫（P2-3）：未 provision 直接诚实报错、零网络——绝不 provision 一个
+        空沙箱去算无意义的 diff（run 收口车道已先行短路，此处兜住 verdict 与直接
+        调用方；判据与 `_has_provisioned_sandbox` 同源）。
+        """
         if self._manager is None:
             raise GitWorkspaceError("沙箱管理器不可用（未注入），无法计算 diff")
         client = self._manager.get(session_id)
         if client is None:
             raise GitWorkspaceError(
                 "会话沙箱不在册（可能已崩溃/释放），无法计算 diff",
+                detail=f"session={session_id}",
+            )
+        if not self._has_provisioned_sandbox(session_id):
+            raise GitWorkspaceError(
+                "会话沙箱尚未 provision（本会话从未实际执行过工具），无法计算 diff",
                 detail=f"session={session_id}",
             )
         if self._manager.stable_phase(session_id) == "paused":

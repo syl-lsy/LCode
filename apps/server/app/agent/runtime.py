@@ -4,8 +4,8 @@
 
 - **本模块**：装配内层 agent + 构图 → `astream(stream_mode=[messages, custom,
   updates], subgraphs=True)` 消费 → 原始事件注入 `EventSink` → 异常分类 →
-  stop/cancel 收敛 → 段终态（`RunOutcome`，含本段 usage——run_service 据此记
-  model_calls，AC-015-1；F4 起不再设 on_usage 回调）。
+  stop/cancel 收敛 → 段终态（`RunOutcome`，含本段 usage——**仅作运行诊断**；成本
+  记账与终态 `usage_totals` 的唯一权威是 translator 的逐次记账，AC-015-1 / M4 前置 D5）。
 - **services/run_service.py（流式接口车道）**：把 EventSink 适配到
   translator+emitter（原始三元组 → 契约域事件 → seq/落库/广播），并用
   `RunOutcome` 收口 run 行与 `translator.finish_run(...)`（在飞消息补
@@ -340,8 +340,9 @@ class RunExecutor:
         「仅末块给总量」与「每块给累计量」两种网关方言），窗口关闭（chunk_position
         =="last" 或消息 id 变化）时折叠进段级 totals——跨消息求和；段结束由
         `_outcome` 兜底折叠残窗。推理 token 已含在 usage_metadata.output_tokens
-        （硬约束 9）。本处是 run 级粗汇总（model_calls 与终态回传的唯一口径源），
-        translator 另有同口径的事件侧累计，双轨互不干扰。
+        （硬约束 9）。**本处只作运行诊断**（失败排查/超时定位）：单窗口在并行子智能体
+        交错流式时会把同一消息的累计量重复折叠，故不参与成本记账——成本行与终态
+        `usage_totals` 以 translator 的 per-agent 逐次记账为唯一权威（M4 前置 D5）。
 
         中断：`parse_interrupts` 解析 `__interrupt__`，按 id/value 去重且**根层优先**
         （同一 interrupt 在根图/子图各出现一次——审批映射只认根层，spike §1.3）。

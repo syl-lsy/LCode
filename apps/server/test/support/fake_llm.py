@@ -53,6 +53,15 @@ class ScriptedChatModel(BaseChatModel):
     delay_seconds: float = 0.0
     """每个流式块之间的延时（stop 测试用，给取消留窗口）。"""
 
+    usage_every_chunk: bool = False
+    """True = 每个流式块都带该步的 usage（累计量方言；translator 的 `_absorb_usage` 明列支持）。
+
+    默认 False（仅末块给总量，贴近 Anthropic/OpenAI 主流网关）。两种方言都是
+    「同一消息内分项取最大」的合法输入；差别只在**并发交错流式**时暴露：累计方言下，
+    任何「按消息 id 折叠的单窗口」消费者会把同一条消息的累计量随窗口切换重复折叠。
+    `test_usage_reconciliation.py` 用它锁定「残差基准必须与逐次记账同源」。
+    """
+
     role: str = "fake"
     """角色标注（测试断言 model_factory 按角色取模型用，不参与行为）。"""
 
@@ -129,13 +138,14 @@ class ScriptedChatModel(BaseChatModel):
         for order, piece in enumerate(pieces):
             if self.delay_seconds and order > 0:
                 await asyncio.sleep(self.delay_seconds)
+            carry_usage = self.usage_every_chunk or order == len(pieces) - 1
             yield ChatGenerationChunk(
                 message=AIMessageChunk(
                     content=piece,
                     id=step.id,
-                    # tool_calls 只挂首块、usage 只挂末块（贴近真网关分块方言）
+                    # tool_calls 只挂首块；usage 默认只挂末块（累计方言下每块都挂）
                     tool_calls=tool_calls if order == 0 else [],
-                    usage_metadata=usage if order == len(pieces) - 1 else None,
+                    usage_metadata=usage if carry_usage else None,
                 )
             )
 

@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app import dependencies as deps_module
-from app.dependencies import get_db
+from app.dependencies import get_current_user_id, get_db
 
 
 class _FakeSession:
@@ -82,3 +82,10 @@ async def test_get_db_rolls_back_and_propagates_on_error(monkeypatch):
         await dependency.athrow(RuntimeError("boom"))
 
     assert session.events == ["rollback", "close"]  # 异常：回滚后关闭
+
+
+def test_get_current_user_id_returns_configured_local_user(monkeypatch):
+    """P0 当前用户依赖：固定取配置的本地用户（P2 鉴权中间件的唯一替换点）。"""
+    monkeypatch.setattr(deps_module.common_settings, "local_user_id", "alice")
+
+    assert get_current_user_id() == "alice"

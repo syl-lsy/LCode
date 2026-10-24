@@ -24,6 +24,11 @@ AUTO 留痕接口 `record_auto_approval` / `record_auto_approval_short_tx` 是 P
 `status=auto_approved` / `decided_by=classifier` / `decision=None` / `reason=分类器理由`
 的一行（AC-013-3 审计面）。落行按 `(session_id, run_id, tool_call_id)` 幂等——resume
 重放同一 tool_call 不会重复落行。
+
+**归属（安全 P2-3）**：请求侧三入口（`list_approvals` / `get_approval` / `decide`）都把
+`user_id` 作为强制入参——列表按 `approvals.user_id` 过滤，详情/决策要求审批行与所属
+run/会话都属于当前用户，非归属与不存在同码 `APPROVAL_NOT_FOUND`(404，不泄漏存在性)。
+后台 run 侧入口（pending 批 / AUTO 留痕 / stop 清理）按 run_id 工作，不受请求用户约束。
 """
 
 from __future__ import annotations
@@ -302,6 +307,7 @@ class ApprovalService(BaseService):
     async def list_approvals(
         self,
         *,
+        user_id: str,
         status: ApprovalStatus | str | None = None,
         session_id: str | None = None,
         cursor: str | None = None,
@@ -310,8 +316,12 @@ class ApprovalService(BaseService):
 
         键集游标分页（`(created_at, id)` 降序，最新在前）——与会话消息列表同口径；
         契约只把 `next_cursor` 定义为不透明字符串。
+
+        **归属过滤（安全 P2-3）**：`user_id` 是强制条件（无默认值，调用方必须显式给出
+        当前用户），列表在任何查询参数组合下都不跨用户返回；`session_id` 只做进一步
+        收窄，不能绕过归属。
         """
-        statement = select(Approval)
+        statement = select(Approval).where(Approval.user_id == user_id)
         if status is not None:
             statement = statement.where(Approval.status == str(status))
         if session_id is not None:
@@ -334,14 +344,14 @@ class ApprovalService(BaseService):
             next_cursor = encode_cursor(Cursor(created_at=last.created_at, id=str(last.id)))
         return ApprovalPage(items=[_approval_item(row) for row in rows], next_cursor=next_cursor)
 
-    async def get_approval(self, approval_id: str) -> ApprovalItem:
-        """审批详情（404 `APPROVAL_NOT_FOUND`）。"""
-        return _approval_item(await self._require_row(approval_id))
+    async def get_approval(self, approval_id: str, *, user_id: str) -> ApprovalItem:
+        """审批详情（404 `APPROVAL_NOT_FOUND`；非归属与不存在同码，不泄漏存在性）。"""
+        return _approval_item(await self._require_row(approval_id, user_id=user_id))
 
     # ---------------------------------------------------------------- 四决策
 
     async def decide(
-        self, approval_id: str, payload: ApprovalDecisionRequest
+        self, approval_id: str, payload: ApprovalDecisionRequest, *, user_id: str
     ) -> tuple[ApprovalItem, str | None]:
         """落一次决策（AC-006-1~4）：锁内判定 → commit → 发 approval_resolved → 触发 resume。
 
@@ -352,6 +362,9 @@ class ApprovalService(BaseService):
         `APPROVAL_NOT_FOUND`(404)。edit 必须带**非空** edited_args、respond 必须带非空
         feedback、`scope=session` 只允许与 approve/edit 组合（契约 DTO 已校验结构，
         这里再守语义一道 → `INVALID_ARGUMENT`）。
+
+        **归属（安全 P2-3）**：`user_id` 为强制入参；审批行与所属 run/会话都必须属于
+        当前用户，非归属与不存在同码 404（不泄漏存在性，见 `_require_pending_row`）。
 
         并发收口（行级锁，随本次 commit 释放；不引分布式机制——P0 单进程单用户）：
         - 审批行 `FOR UPDATE`：同一审批的重复/并发决策串行化，后到者重读到已决状态 →
@@ -374,7 +387,7 @@ class ApprovalService(BaseService):
           失败只记 ERROR；其中 resume 启动失败还会把 run 收敛成 `error`（见
           `_fail_run_after_resume_error`），避免会话被永久占在活动 run 状态。
         """
-        row = await self._require_pending_row(approval_id)
+        row = await self._require_pending_row(approval_id, user_id=user_id)
         if row.status != "pending":
             raise ApprovalAlreadyResolved(
                 "该审批已处理", detail=f"approval={approval_id} status={row.status}"
@@ -492,25 +505,52 @@ class ApprovalService(BaseService):
 
     # ---------------------------------------------------------------- 内部
 
-    async def _require_row(self, approval_id: str) -> Approval:
+    async def _require_row(self, approval_id: str, *, user_id: str) -> Approval:
+        """审批详情取行：要求归属当前用户（安全 P2-3）。
+
+        非归属与不存在走同一个 `APPROVAL_NOT_FOUND`(404)——不泄漏「id 存在但属于别人」。
+        """
         key = self._uuid_of(approval_id, kind="审批")
         row = await self.db.get(Approval, key)
-        if row is None:
+        if row is None or row.user_id != user_id:
             raise ApprovalNotFound(f"审批不存在：{approval_id}")
         return row
 
-    async def _require_pending_row(self, approval_id: str) -> Approval:
-        """决策入口：取审批行并加行级锁（`SELECT ... FOR UPDATE`）。
+    async def _require_pending_row(self, approval_id: str, *, user_id: str) -> Approval:
+        """决策入口：取审批行并加行级锁（`SELECT ... FOR UPDATE`）+ 归属校验。
 
         锁随本次决策 commit 释放；并发的同审批决策在后到者重读时已看到 `approved`，
         直接走 409 分支（不会双落行/双回声）。读用 `populate_existing` 语义（`get` +
         `with_for_update`）：即使会话内已有该行缓存，也强制走一次锁定读。
+
+        归属（安全 P2-3）：审批行 `user_id` 与所属 run/会话的 `user_id` 都必须等于当前
+        用户；任一不符与不存在同码 404。行锁先于归属判定取得，异常路径由 `get_db`
+        统一 rollback（锁随事务释放），不留副作用。
         """
         key = self._uuid_of(approval_id, kind="审批")
         row = await self.db.get(Approval, key, with_for_update=True, populate_existing=True)
-        if row is None:
+        if row is None or row.user_id != user_id:
             raise ApprovalNotFound(f"审批不存在：{approval_id}")
+        await self._require_owner_chain(row, user_id=user_id)
         return row
+
+    async def _require_owner_chain(self, row: Approval, *, user_id: str) -> None:
+        """审批行关联的 run/会话也必须属于当前用户（安全 P2-3 的第二道归属）。
+
+        正常写入路径同源（`run_service` 把 `sessions.user_id` 透传给 approvals/runs），
+        这里防的是「审批行归属正确、关联资源却属于他人」的错配（历史数据/直接写库）：
+        决策会驱动 run 续跑，跨用户续跑等于在别人的会话/沙箱里执行工具，必须拒绝。
+
+        关联行缺失时不拦：会话由 FK 保证存在（删除会话会连带清理审批行），run_id 可空；
+        归属主条件仍是审批行自身的 `user_id`（调用方已校验）。
+        """
+        if row.run_id is not None:
+            run_row = await self.db.get(RunRow, row.run_id)
+            if run_row is not None and run_row.user_id != user_id:
+                raise ApprovalNotFound(f"审批不存在：{row.id}")
+        session_row = await self.db.get(Session, row.session_id)
+        if session_row is not None and session_row.user_id != user_id:
+            raise ApprovalNotFound(f"审批不存在：{row.id}")
 
     async def _upgrade_session_scope(self, session_id: uuid.UUID) -> None:
         """`scope=session` 的会话级升级（独立短事务；锁序见 `decide` docstring）。

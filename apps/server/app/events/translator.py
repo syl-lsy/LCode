@@ -435,11 +435,15 @@ class EventTranslator:
         phase: Literal["finished", "stopped", "error"],
         *,
         error: RunErrorObj | None = None,
-        usage_totals: Usage | None = None,
+        usage_offset: Usage | None = None,
     ) -> list[BaseEvent]:
         """收口：在飞消息补 `message_finished` + `run_status`（AC-001-2 的 stopped/error 路径）。
 
-        - `finished`：usage_totals 缺省用累计值；`stopped`/`error` 不带 totals（契约允许）；
+        - `finished`：`usage_totals` = **本段累计 + `usage_offset`（既往段落合计）**；
+          求和必须发生在 `close_open_message` **之后**——在飞消息的 usage 只有收口那
+          一刻才从 `_open_messages` 折叠进 `_usage_totals`（M4 前置 D5：事件 / DB 行 /
+          残差对账三者同源，调用方不得预读本段用量）；
+        - `stopped`/`error`：不带 totals（契约允许），`usage_offset` 忽略；
         - `error`：契约硬校验必须携带 `RunErrorObj`（缺失即抛——给运行时一个明确的失败点）；
         - 在飞消息的 finish_reason：finished→stop / stopped→cancelled / error→error。
         """
@@ -451,11 +455,14 @@ class EventTranslator:
         finish_reason = finish_reason_map[phase]
         events = self.close_open_message(finish_reason)
         events.extend(self._flush_open_tool_calls())
-        totals = (
-            usage_totals
-            if usage_totals is not None
-            else (self._usage_totals if phase == "finished" else None)
-        )
+        totals: Usage | None = None
+        if phase == "finished":
+            totals = self._usage_totals
+            if usage_offset is not None:
+                totals = Usage(
+                    input_tokens=totals.input_tokens + usage_offset.input_tokens,
+                    output_tokens=totals.output_tokens + usage_offset.output_tokens,
+                )
         events.append(self._run_status_event(phase, error=error, usage_totals=totals))
         return events
 
@@ -473,7 +480,11 @@ class EventTranslator:
 
     @property
     def usage_totals(self) -> Usage:
-        """run 级累计用量（Σ 各 assistant 消息；推理 token 已含在 output 口径内）。"""
+        """本段累计用量（Σ 各已收口 assistant 消息；推理 token 已含在 output 口径内）。
+
+        **成本记账的权威口径**（M4 前置 D5）：逐次 `model_calls` 与残差对账都以此为准；
+        `RunOutcome.usage`（runtime 侧 messages 通道单窗口）只作运行诊断，不参与记账。
+        """
         return self._usage_totals
 
     @property

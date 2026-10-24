@@ -8,6 +8,7 @@
 | `test_run_command_streams_chunks_with_exec_id` | AC-002-1（stdout 增量 + exec_id 标注） |
 | `test_idle_pause_fires_at_threshold` | AC-002-2（假时钟推进到阈值才 pause） |
 | `test_idle_pause_skipped_while_run_active` | AC-002-2（Q3：run 活跃期间永不 pause） |
+| `test_ensure_reuse_refreshes_idle_against_sweeper` | Q3（评审项 2：ensure→begin_run 窗口不被空闲 pause） |
 | `test_resume_preserves_registry` | AC-002-2（恢复沿用同一实例） |
 | `test_usage_segments_running_and_paused` | AC-015-4（running/paused 分段 + 时长） |
 | `test_session_delete_kills_sandbox` | AC-002-3（DELETE → kill） |
@@ -16,6 +17,16 @@
 | `test_factory_provider_switch_only_new_sessions` | AC-002-6（provider 按会话固化） |
 | `test_shutdown_pauses_running_sandboxes` | U9（关停 pause 而非 kill） |
 | `test_illegal_transition_raises` | 相位机约束（设计 §4.3） |
+| `test_concurrent_ensure_creates_once` | S2（并发 ensure 同一会话只 create 一次） |
+| `test_ensure_reuses_registered_instance` | S2（第二次 ensure 复用实例，不再 create） |
+| `test_ensure_resumes_paused_session` | S2（paused 会话 ensure 走 resume） |
+| `test_ensure_recreates_from_terminal_phases` | S2（killed/crashed 后 ensure 拉新实例） |
+| `test_ensure_different_sessions_do_not_block` | S2（分片锁：不同会话互不阻塞） |
+| `test_run_service_ensure_backend_offloads_to_thread` | S1（run 层 ensure 经 to_thread 卸载） |
+| `test_ensure_adopts_persisted_sandbox` | S3（不在册 + 持久 id → adopt 重连，不 create） |
+| `test_ensure_adopt_failure_falls_back_to_rebuild` | S3（adopt 失败 → rebuild + recreated + needs_reload） |
+| `test_ensure_prefers_registered_instance_over_persisted_id` | S3（决策矩阵：在册实例优先于持久 id） |
+| `test_bailian_adopt_*` / `test_opensandbox_adopt_*` | S3（适配器 adopt 的注入式单测） |
 | 适配器段（`test_bailian_*` / `test_opensandbox_*`） | 双适配器薄翻译的注入式单测（真 SDK 冒烟单列 requires_sandbox） |
 
 时钟固定（test-plan §3.6）：本模块用 `FakeClock` patch `app.utils.clock.utc_now`，
@@ -29,16 +40,18 @@ shell 命令原文**（替身在工作根目录真跑子进程），不是任何
 from __future__ import annotations
 
 import shutil
+import threading
 import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import FrozenInstanceError, dataclass, field
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from time import perf_counter, sleep
 from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
-from e2b import AuthenticationException
+from e2b import AuthenticationException, SandboxNotFoundException
 from e2b.sandbox.commands.command_handle import CommandExitException
 
 from app.core.config import SandboxSettings
@@ -55,6 +68,7 @@ from app.sandbox.base import (
 )
 from app.sandbox.manager import SandboxLifecycleEvent, SandboxManager, SandboxUsageRecord
 from app.sandbox.opensandbox import OpenSandboxSandbox
+from app.services.message_service import RunLaunch
 from app.services.run_service import RunService
 from test.support.fake_sandbox import ExecStep, FakeSandbox
 
@@ -289,6 +303,32 @@ def test_activity_resets_idle_timer(manager: SandboxManager, fake_clock: FakeClo
     assert manager.evaluate_idle() == ()  # 距上次活动 30s < 60s
     fake_clock.advance(30)
     assert manager.evaluate_idle() == (SESSION,)
+
+
+def test_ensure_reuse_refreshes_idle_against_sweeper(
+    manager: SandboxManager,
+    created_sandboxes: list[FakeSandbox],
+    fake_clock: FakeClock,
+) -> None:
+    """Q3（评审项 2）：ensure 复用刚到空闲阈值的实例必须刷新活跃计时——sweeper 在
+    「ensure 返回 → begin_run」窗口内不得 pause 刚就绪的 run。
+
+    确定性构造：fake_clock 推到阈值（最坏输入）→ ensure 走复用路径 → **串行**执行与
+    sweeper 线程完全相同的决策代码 `evaluate_idle`——它锁内读到的字段与任何并发时序下
+    完全一致：ensure 在锁内刷新过计时则 idle=0 不 pause；若刷新缺失（回归）则必然
+    pause，本用例红。run_service 的调用序正是 ensure → (窗口) → begin_run。
+    """
+    sandbox = as_fake(manager.create(SESSION, provider="bailian"))
+    fake_clock.advance(60)  # 恰到 idle_pause_seconds 阈值：sweeper 随时可合法 pause
+
+    client, _needs = manager.ensure(SESSION, provider="bailian")  # 复用路径（begin_run 未执行）
+    assert manager.evaluate_idle() == ()  # 竞态窗口内的 sweeper 决策
+    manager.begin_run(SESSION)
+
+    assert client is sandbox
+    assert manager.active_runs(SESSION) == 1
+    assert manager.stable_phase(SESSION) == "running"
+    assert "pause" not in sandbox.calls  # run 就绪到活跃之间不允许被 pause
 
 
 def test_resume_preserves_registry(
@@ -739,6 +779,695 @@ def test_status_projection_for_unregistered_session(manager: SandboxManager) -> 
     assert manager.provider(SESSION) is None
 
 
+# ============================================================ S1/S2 ensure 与会话级锁
+#
+# S1：run_service 把同步 provision 经 asyncio.to_thread 卸到工作线程 → manager 必须
+# 自带线程安全。S2 的核心不变量：**同一会话的「检查-决策-登记」在同一把会话锁内原子
+# 完成**（并发 ensure 至多 provision 一次），不同会话各持一把锁互不阻塞。
+
+
+class _SlowCreateSandbox(FakeSandbox):
+    """create 可延迟/可设闸的替身（S2 并发测试：拉长「检查-创建-登记」窗口供竞争）。"""
+
+    def __init__(
+        self,
+        *,
+        delay_seconds: float = 0.0,
+        create_gate: threading.Event | None = None,
+        **kwargs: Any,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._delay_seconds = delay_seconds
+        self.create_gate = create_gate
+        self.enter_create = threading.Event()
+        """进入 create 时置位（证明 A 已在 provision 中，供 B 的无阻塞断言锚定时序）。"""
+
+    def create(self, *, timeout_seconds: int | None = None) -> None:
+        self.enter_create.set()
+        if self.create_gate is not None:
+            self.create_gate.wait(timeout=10)
+        if self._delay_seconds:
+            sleep(self._delay_seconds)
+        super().create(timeout_seconds=timeout_seconds)
+
+
+def test_concurrent_ensure_creates_once(tmp_root: Path, sinks: RecordingSinks) -> None:
+    """S2 核心不变量：多线程同时 ensure 同一会话，工厂只被调用一次。
+
+    Barrier 同步起点 + create 延迟把竞争窗口拉满——若无会话锁，8 个线程都会穿过
+    「查注册表」在窗口内各自 create；有锁时后到者在锁上等待并复用先到者的实例。
+    """
+    created: list[FakeSandbox] = []
+    barrier = threading.Barrier(8)
+
+    def counting_factory(provider: SandboxProvider, session_id: str) -> LcodeSandbox:
+        sandbox = _SlowCreateSandbox(
+            root=tmp_root,
+            provider=provider,
+            session_id=session_id,
+            sandbox_id=f"fake-{provider}-{len(created) + 1}",
+            delay_seconds=0.03,
+        )
+        created.append(sandbox)
+        return sandbox
+
+    manager = SandboxManager(
+        factory=counting_factory, idle_pause_seconds=60, on_lifecycle=sinks.on_lifecycle
+    )
+    results: list[LcodeSandbox] = []
+    errors: list[Exception] = []
+
+    def worker() -> None:
+        try:
+            barrier.wait(timeout=5)
+            client, _needs = manager.ensure(SESSION, provider="bailian")
+            results.append(client)
+        except Exception as exc:  # noqa: BLE001 —— 线程内异常收集到主线程断言
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, name=f"ensure-{n}") for n in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=5)
+    assert all(not thread.is_alive() for thread in threads), "ensure 线程未在超时内收敛"
+    assert errors == []
+
+    assert len(created) == 1, f"并发 ensure 触发了 {len(created)} 次 provision（锁失效）"
+    assert len({id(client) for client in results}) == 1  # 全部线程拿到同一实例
+    assert results[0] is created[0]
+    assert manager.phase(SESSION) == "running"
+    assert as_fake(results[0]).calls == ["create"]
+    assert sinks.phases == ["creating", "running"]  # 相位事件也恰好一对
+
+
+def test_ensure_reuses_registered_instance(
+    manager: SandboxManager, created_sandboxes: list[FakeSandbox]
+) -> None:
+    """S2：第二次 ensure 直接复用在册实例（不 create、不 resume）。"""
+    first, needs_first = manager.ensure(SESSION, provider="bailian")
+    second, needs_second = manager.ensure(SESSION, provider="bailian")
+
+    assert needs_first is False and needs_second is False
+    assert first is second is created_sandboxes[0]
+    assert len(created_sandboxes) == 1
+    assert as_fake(first).calls == ["create"]
+
+
+def test_ensure_resumes_paused_session(
+    manager: SandboxManager, sinks: RecordingSinks, created_sandboxes: list[FakeSandbox]
+) -> None:
+    """S2：paused 会话 ensure 走 resume（沿用同一实例），而不是 create 拉新。"""
+    sandbox = as_fake(manager.ensure(SESSION, provider="bailian")[0])
+    manager.pause(SESSION, reason="manual")
+    assert manager.stable_phase(SESSION) == "paused"
+
+    resumed, needs_reload = manager.ensure(SESSION, provider="bailian")
+
+    assert needs_reload is False
+    assert resumed is sandbox is created_sandboxes[0]
+    assert len(created_sandboxes) == 1  # 没有新实例
+    assert manager.stable_phase(SESSION) == "running"
+    assert sandbox.calls == ["create", "pause", "resume"]
+    assert sinks.lifecycle[-1].phase == "resumed"
+
+
+def test_ensure_recreates_from_terminal_phases(
+    manager: SandboxManager, created_sandboxes: list[FakeSandbox]
+) -> None:
+    """S2：不在册（killed / crashed 终态）且无持久 id 时 ensure 走 create 拉新实例。"""
+    first = as_fake(manager.ensure(SESSION, provider="bailian")[0])
+    manager.release(SESSION)
+    assert manager.stable_phase(SESSION) == "killed"
+
+    fresh, needs_reload = manager.ensure(SESSION, provider="bailian")
+
+    assert needs_reload is False  # 无既有现场可丢：普通拉新不告知重载
+    assert fresh is not first
+    assert len(created_sandboxes) == 2
+    assert manager.stable_phase(SESSION) == "running"
+
+    # crashed 同样可拉新（AC-002-4 之后新 run 的恢复路径）
+    manager.mark_crashed(SESSION, reason="剧本设定：不可用")
+    third, _needs = manager.ensure(SESSION, provider="bailian")
+
+    assert third is not fresh
+    assert len(created_sandboxes) == 3
+    assert manager.stable_phase(SESSION) == "running"
+
+
+# --------------------------------------------------------------------- S3 adopt 重连
+
+
+def test_ensure_adopts_persisted_sandbox(tmp_root: Path, sinks: RecordingSinks) -> None:
+    """S3：不在册 + 持久 id 非空 → 工厂新建适配器后 adopt 重连（不 create、不 provision）。
+
+    FakeSandbox.adopt 会把实例 id 换成被 adopt 的持久 id——断言 id 即证明重连到了
+    「上一进程生命周期」的沙箱；相位 running + running 计费段 + reason=adopt 的事件。
+    """
+    created: list[FakeSandbox] = []
+
+    def adopt_factory(provider: SandboxProvider, session_id: str) -> LcodeSandbox:
+        sandbox = FakeSandbox(
+            root=tmp_root,
+            provider=provider,
+            session_id=session_id,
+            sandbox_id=f"sbx-unrelated-{len(created) + 1}",  # adopt 成功前 id 与持久值无关
+        )
+        created.append(sandbox)
+        return sandbox
+
+    manager = SandboxManager(
+        factory=adopt_factory, idle_pause_seconds=60, on_lifecycle=sinks.on_lifecycle
+    )
+
+    client, needs_reload = manager.ensure(
+        SESSION, provider="bailian", persisted_sandbox_id="sbx-persisted-9"
+    )
+
+    assert needs_reload is False
+    assert client is created[0]
+    assert client.id == "sbx-persisted-9"  # adopt 把实例重连到持久 id
+    assert client.sandbox_id == "sbx-persisted-9"
+    assert as_fake(client).calls == ["adopt"]  # 没有 create：provider 侧不新建
+    assert len(created) == 1
+    assert manager.phase(SESSION) == "running"
+    assert manager.stable_phase(SESSION) == "running"
+    assert manager.provider(SESSION) == "bailian"
+    assert sinks.phases == ["running"]  # 无 creating 迁移（沙箱早已存在）
+    assert sinks.lifecycle[0].reason == "adopt"
+    assert sinks.lifecycle[0].sandbox_id == "sbx-persisted-9"
+    open_segment = manager.open_usage_segment(SESSION)
+    assert open_segment is not None and open_segment.phase == "running"
+
+
+def test_ensure_adopt_reuses_existing_ledger_state(tmp_root: Path, sinks: RecordingSinks) -> None:
+    """S3 账本原则：既有 `_SessionState` 复用不重建——计费分段历史跨 adopt 保留。
+
+    场景：adopt 成功 → release（封口一段、phase=killed）→ 再次 ensure 同一持久 id
+    （模拟又一轮重启）。若 adopt 分支无脑新建账本，第一段计费记录会丢。
+    """
+    created: list[FakeSandbox] = []
+
+    def adopt_factory(provider: SandboxProvider, session_id: str) -> LcodeSandbox:
+        sandbox = FakeSandbox(
+            root=tmp_root, provider=provider, session_id=session_id, sandbox_id="sbx-persisted-9"
+        )
+        created.append(sandbox)
+        return sandbox
+
+    manager = SandboxManager(
+        factory=adopt_factory, idle_pause_seconds=60, on_usage_segment=sinks.on_usage
+    )
+    manager.ensure(SESSION, provider="bailian", persisted_sandbox_id="sbx-persisted-9")
+    manager.release(SESSION)
+    assert len(manager.usage_segments(SESSION)) == 1  # release 封口了一段 running
+
+    client, needs_reload = manager.ensure(
+        SESSION, provider="bailian", persisted_sandbox_id="sbx-persisted-9"
+    )
+
+    assert needs_reload is False
+    assert client is created[1]  # 第二只适配器实例（killed 后不在册，重新 adopt）
+    segments = manager.usage_segments(SESSION)
+    assert len(segments) == 1  # release 封口的历史段保留（账本未被 adopt 分支重建清空）
+    assert segments[0].segment.duration_seconds is not None
+    assert manager.open_usage_segment(SESSION) is not None  # 本轮 adopt 已开新的 running 段
+    assert manager.provider(SESSION) == "bailian"  # 固化值未被调用方传参冲掉
+
+
+def test_ensure_adopt_failure_falls_back_to_rebuild(tmp_root: Path, sinks: RecordingSinks) -> None:
+    """S3：adopt 失败（持久 id 已被回收）→ 走既有 rebuild：recreated 事件 + needs_reload。"""
+    created: list[FakeSandbox] = []
+
+    def adopt_failing_factory(provider: SandboxProvider, session_id: str) -> LcodeSandbox:
+        sandbox = FakeSandbox(
+            root=tmp_root,
+            provider=provider,
+            session_id=session_id,
+            sandbox_id=f"sbx-fresh-{len(created) + 1}",
+            fail_adopt=len(created) == 0,  # 只有 adopt 尝试（第一只）失败
+        )
+        created.append(sandbox)
+        return sandbox
+
+    manager = SandboxManager(
+        factory=adopt_failing_factory, idle_pause_seconds=60, on_lifecycle=sinks.on_lifecycle
+    )
+
+    client, needs_reload = manager.ensure(
+        SESSION, provider="bailian", persisted_sandbox_id="sbx-dead-id"
+    )
+
+    assert needs_reload is True  # 无 restore 回调：明确告知需重载现场
+    assert client is created[1]  # adopt 失败的实例被丢弃，rebuild 换了新实例
+    assert as_fake(client).calls == ["create"]  # 重建走 create，不再 adopt
+    assert created[0].calls == ["adopt"]  # 第一次尝试确实发起了 adopt
+    assert len(created) == 2
+    assert manager.phase(SESSION) == "recreated"
+    assert manager.stable_phase(SESSION) == "running"
+    assert manager.get(SESSION) is client  # 重建实例已在册（后续 ensure 复用它）
+    assert [event.phase for event in sinks.lifecycle] == ["recreated"]
+    assert "adopt 失败" in (sinks.lifecycle[0].reason or "")
+    assert sinks.lifecycle[0].sandbox_id == client.id  # 新 id 随事件外发（桥接写回 DB 面）
+
+
+def test_ensure_prefers_registered_instance_over_persisted_id(
+    manager: SandboxManager, created_sandboxes: list[FakeSandbox]
+) -> None:
+    """S3 决策矩阵：在册实例优先——持久 id 只在「不在册」时才参与 adopt 分支。"""
+    first = as_fake(manager.create(SESSION, provider="bailian"))
+
+    client, needs_reload = manager.ensure(
+        SESSION, provider="bailian", persisted_sandbox_id="sbx-elsewhere"
+    )
+
+    assert needs_reload is False
+    assert client is first
+    assert first.calls == ["create"]  # 未发起 adopt（在册即复用）
+    assert len(created_sandboxes) == 1
+
+
+# =============================================================== 懒加载（bug 修复）
+#
+# run 车道改走 `ensure_lazy`：登记未 provision 实例（零网络），真实 provision 推迟到
+# 首次实际使用（适配器 `_ensure_provisioned`）并经 provision 通知回调落相位/计费段/
+# 事件。核心不变量：
+# ① 纯聊天 run 全程零沙箱调用；② 首次工具调用才 create/adopt 且恰好一次；
+# ③ paused 会话纯聊天不 resume、首工具调用 resume 一次；④ provision 失败 = 工具错误
+# + crashed + 无悬挂计费段；⑤ 未 provision 实例的 release/shutdown/sweeper/status/probe
+# 零网络不炸；⑥ adopt 懒触发（持久 id 在首工具调用时消费）。
+
+
+def test_ensure_lazy_registers_unprovisioned_without_network(
+    manager: SandboxManager, sinks: RecordingSinks, created_sandboxes: list[FakeSandbox]
+) -> None:
+    """懒加载①：ensure_lazy 只登记——零网络调用、相位 none、零事件、零计费段。"""
+    sandbox = as_fake(manager.ensure_lazy(SESSION, provider="bailian"))
+
+    assert manager.get(SESSION) is sandbox
+    assert manager.sessions() == (SESSION,)
+    assert manager.provider(SESSION) == "bailian"
+    assert manager.phase(SESSION) == "none"
+    assert manager.stable_phase(SESSION) == "none"
+    assert sandbox.calls == []  # 零网络：无 create/adopt/status
+    assert sandbox.state.created is False
+    assert sandbox.provisioned is False
+    assert sandbox.id == f"bailian:pending:{SESSION}"  # 占位 id（未 provision 口径不变）
+    assert sinks.phases == []  # 零生命周期事件
+    assert manager.open_usage_segment(SESSION) is None  # 零计费段
+    assert manager.usage_segments(SESSION) == ()
+
+
+def test_ensure_lazy_reuses_registered_instance(
+    manager: SandboxManager, created_sandboxes: list[FakeSandbox]
+) -> None:
+    """懒加载：重复 ensure_lazy 复用同一实例（工厂只构造一次、零网络）。"""
+    first = manager.ensure_lazy(SESSION, provider="bailian")
+    second = manager.ensure_lazy(SESSION, provider="bailian")
+
+    assert first is second is created_sandboxes[0]
+    assert len(created_sandboxes) == 1
+    assert as_fake(first).calls == []
+
+
+def test_ensure_lazy_first_command_provisions_exactly_once(
+    manager: SandboxManager, sinks: RecordingSinks, created_sandboxes: list[FakeSandbox]
+) -> None:
+    """懒加载②：首次实际使用（命令）才 create 且恰好一次；相位/事件/计费段同步迁移。"""
+    sandbox = as_fake(manager.ensure_lazy(SESSION, provider="bailian"))
+    assert sinks.phases == []
+
+    result = manager.run_command(SESSION, CDM_ECHO_HELLO, exec_id=TOOL_CALL_ID)
+
+    assert result.exit_code == 0
+    assert "hello" in result.output
+    assert sandbox.calls == ["create"]  # 首次使用才 create，恰好一次
+    assert manager.phase(SESSION) == "running"
+    assert manager.stable_phase(SESSION) == "running"
+    assert sinks.phases == ["creating", "running"]  # 懒触发路径同样一对相位事件
+    assert sinks.lifecycle[0].sandbox_id is None
+    assert sinks.lifecycle[1].sandbox_id == sandbox.id
+    open_segment = manager.open_usage_segment(SESSION)
+    assert open_segment is not None and open_segment.phase == "running"
+
+    manager.run_command(SESSION, CDM_ECHO_TICK)  # 幂等：不重复 provision
+    assert sandbox.calls == ["create"]
+    assert sinks.phases == ["creating", "running"]
+
+
+def test_ensure_lazy_paused_stays_paused_until_first_use(
+    manager: SandboxManager, sinks: RecordingSinks, fake_clock: FakeClock
+) -> None:
+    """懒加载③：paused 会话的 run 保持 paused（不网络 resume）；首工具调用 resume 一次。"""
+    sandbox = as_fake(manager.ensure_lazy(SESSION, provider="bailian"))
+    manager.run_command(SESSION, CDM_ECHO_HELLO)  # 首 run 实际使用 → create
+    fake_clock.advance(60)
+    assert manager.evaluate_idle() == (SESSION,)
+    assert manager.stable_phase(SESSION) == "paused"
+
+    again = as_fake(manager.ensure_lazy(SESSION, provider="bailian"))  # 下一 run：纯聊天起点
+
+    assert again is sandbox
+    assert manager.stable_phase(SESSION) == "paused"  # 保持 paused，不做网络 resume
+    assert sandbox.calls == ["create", "pause"]
+
+    manager.run_command(SESSION, CDM_ECHO_TICK, exec_id=TOOL_CALL_ID_B)  # 首工具调用：懒 resume
+
+    assert manager.stable_phase(SESSION) == "running"
+    assert sandbox.calls == ["create", "pause", "resume"]
+    assert sinks.lifecycle[-1].phase == "resumed"
+    # 计费分段：running → paused 已封口，resume 另开 running 段
+    segments = [item.segment for item in manager.usage_segments(SESSION)]
+    assert [segment.phase for segment in segments] == ["running", "paused"]
+    open_segment = manager.open_usage_segment(SESSION)
+    assert open_segment is not None and open_segment.phase == "running"
+
+
+def test_ensure_lazy_adopts_persisted_id_on_first_use(
+    tmp_root: Path, sinks: RecordingSinks
+) -> None:
+    """懒加载⑥：持久 id 存在 → 首工具调用走 adopt 而非 create；事件 reason=adopt。"""
+    created: list[FakeSandbox] = []
+
+    def adopt_factory(provider: SandboxProvider, session_id: str) -> LcodeSandbox:
+        sandbox = FakeSandbox(
+            root=tmp_root, provider=provider, session_id=session_id, sandbox_id="sbx-unrelated"
+        )
+        created.append(sandbox)
+        return sandbox
+
+    manager = SandboxManager(
+        factory=adopt_factory, idle_pause_seconds=60, on_lifecycle=sinks.on_lifecycle
+    )
+
+    client = manager.ensure_lazy(
+        SESSION, provider="bailian", persisted_sandbox_id="sbx-persisted-9"
+    )
+
+    assert created[0].calls == []  # 登记阶段零网络（不 adopt）
+    assert manager.phase(SESSION) == "none"
+
+    manager.run_command(SESSION, CDM_ECHO_HELLO)
+
+    assert created[0].calls == ["adopt"]  # 首工具调用 adopt，恰好一次、无 create
+    assert client.id == "sbx-persisted-9"
+    assert client.sandbox_id == "sbx-persisted-9"
+    assert manager.phase(SESSION) == "running"
+    assert sinks.phases == ["creating", "running"]
+    assert sinks.lifecycle[1].reason == "adopt"
+    assert sinks.lifecycle[1].sandbox_id == "sbx-persisted-9"
+    assert manager.open_usage_segment(SESSION) is not None
+
+
+def test_ensure_lazy_adopt_failure_falls_back_to_create(
+    tmp_root: Path, sinks: RecordingSinks
+) -> None:
+    """P1 自愈：持久 id 失效 → 首次使用 adopt 失败 → 同一次调用内降级 create 兜底。
+
+    成功通知 reason="recreated"（对齐 eager adopt→rebuild 的 AC-002-4 告知语义）；
+    相位 running、running 计费段照常开。
+    """
+    created: list[FakeSandbox] = []
+
+    def fallback_factory(provider: SandboxProvider, session_id: str) -> LcodeSandbox:
+        sandbox = FakeSandbox(
+            root=tmp_root,
+            provider=provider,
+            session_id=session_id,
+            sandbox_id="sbx-fresh-1",
+            fail_adopt=True,
+        )
+        created.append(sandbox)
+        return sandbox
+
+    manager = SandboxManager(
+        factory=fallback_factory, idle_pause_seconds=60, on_lifecycle=sinks.on_lifecycle
+    )
+    client = manager.ensure_lazy(SESSION, provider="bailian", persisted_sandbox_id="sbx-dead-id")
+
+    result = manager.run_command(SESSION, CDM_ECHO_HELLO)
+
+    assert result.exit_code == 0
+    assert created[0].calls == ["adopt", "create"]  # adopt 一次 + 降级 create 一次
+    assert client.id == "sbx-fresh-1"
+    assert manager.phase(SESSION) == "running"
+    assert sinks.phases == ["creating", "running"]
+    assert sinks.lifecycle[1].reason == "recreated"
+    assert sinks.lifecycle[1].sandbox_id == "sbx-fresh-1"
+    assert manager.open_usage_segment(SESSION) is not None
+
+
+def test_ensure_lazy_adopt_fallback_create_failure_latches_crashed(
+    sinks: RecordingSinks, tmp_root: Path
+) -> None:
+    """P1 烙死交互：adopt 失败 → 降级 create 也失败 → 最终失败才烙死 + crashed。"""
+    created: list[FakeSandbox] = []
+
+    def failing_factory(provider: SandboxProvider, session_id: str) -> LcodeSandbox:
+        sandbox = FakeSandbox(
+            root=tmp_root,
+            provider=provider,
+            session_id=session_id,
+            fail_adopt=True,
+            fail_create=True,
+        )
+        created.append(sandbox)
+        return sandbox
+
+    manager = SandboxManager(
+        factory=failing_factory, idle_pause_seconds=60, on_lifecycle=sinks.on_lifecycle
+    )
+    manager.ensure_lazy(SESSION, provider="bailian", persisted_sandbox_id="sbx-dead-id")
+
+    with pytest.raises(SandboxUnavailable):
+        manager.run_command(SESSION, CDM_ECHO_HELLO)
+
+    assert created[0].calls == ["adopt", "create"]  # 降级 create 恰好尝试一次
+    assert manager.phase(SESSION) == "crashed"
+    assert manager.get(SESSION) is None
+    assert manager.open_usage_segment(SESSION) is None
+    assert manager.usage_segments(SESSION) == ()
+    assert sinks.phases == ["creating", "crashed"]
+
+
+def test_late_running_notice_after_release_kills_orphan(
+    manager: SandboxManager, sinks: RecordingSinks, created_sandboxes: list[FakeSandbox]
+) -> None:
+    """P2-1：release 与在途 provision 的窄竞态——迟到 running 通知触发 best-effort kill。
+
+    全程公开 API 模拟：release 零网络摘除后，工具线程的懒 provision 恰好完成——create
+    成功、通知迟到；manager 按身份判伪丢弃通知，并把泄漏实例第一时间 kill。
+    """
+    sandbox = as_fake(manager.ensure_lazy(SESSION, provider="bailian"))
+    manager.release(SESSION, reason="user")  # 未 provision → 零网络摘除（窄竞态前提）
+    assert manager.phase(SESSION) == "killed"
+
+    result = sandbox.run_command(CDM_ECHO_HELLO)  # 懒 provision 在摘除之后才完成
+
+    assert result.exit_code == 0
+    assert sandbox.calls == ["create", "kill"]  # 泄漏实例第一时间被 best-effort kill
+    assert manager.get(SESSION) is None
+    assert manager.phase(SESSION) == "killed"  # 迟到通知不改写已终态账本
+
+
+def test_ensure_lazy_reregistration_clears_stale_sandbox_id(
+    manager: SandboxManager, sinks: RecordingSinks
+) -> None:
+    """P2-2：crashed 复用账本重登记后，creating 生命周期事件不得携带陈旧 sandbox_id。"""
+    manager.ensure_lazy(SESSION, provider="bailian")
+    manager.run_command(SESSION, CDM_ECHO_HELLO)  # provision → 账本记下实例 id
+    manager.mark_crashed(SESSION, reason="剧本设定")  # 账本残留旧 sandbox_id
+
+    manager.ensure_lazy(SESSION, provider="bailian")  # 重登记新实例
+    manager.run_command(SESSION, CDM_ECHO_TICK)  # 懒 provision → 第二次 creating 事件
+
+    creating = [event for event in sinks.lifecycle if event.phase == "creating"]
+    assert len(creating) == 2
+    assert creating[-1].sandbox_id is None  # 不得携带上一实例的陈旧 id 上 wire
+
+
+def test_ensure_lazy_provision_failure_marks_crashed_without_segment(
+    sinks: RecordingSinks, tmp_root: Path
+) -> None:
+    """懒加载④：provision 失败 → 工具错误 + crashed + 无悬挂计费段；可重新懒登记。"""
+    created: list[FakeSandbox] = []
+
+    def failing_factory(provider: SandboxProvider, session_id: str) -> LcodeSandbox:
+        sandbox = FakeSandbox(
+            root=tmp_root, provider=provider, session_id=session_id, fail_create=True
+        )
+        created.append(sandbox)
+        return sandbox
+
+    manager = SandboxManager(
+        factory=failing_factory, idle_pause_seconds=60, on_lifecycle=sinks.on_lifecycle
+    )
+    manager.ensure_lazy(SESSION, provider="bailian")
+
+    with pytest.raises(SandboxUnavailable):
+        manager.run_command(SESSION, CDM_ECHO_HELLO)
+
+    assert created[0].calls == ["create"]  # 恰好一次 provision 尝试
+    assert manager.phase(SESSION) == "crashed"
+    assert manager.stable_phase(SESSION) == "crashed"
+    assert manager.get(SESSION) is None
+    assert manager.open_usage_segment(SESSION) is None  # 无悬挂计费段
+    assert manager.usage_segments(SESSION) == ()
+    assert sinks.phases == ["creating", "crashed"]
+
+    # crashed 后重新懒登记：拉新实例（账本复用、相位回 none），不是 rebuild 旧实例
+    fresh = as_fake(manager.ensure_lazy(SESSION, provider="bailian"))
+    assert fresh is created[1]
+    assert manager.phase(SESSION) == "none"
+
+
+def test_ensure_lazy_release_shutdown_idle_are_zero_network(
+    manager: SandboxManager,
+    sinks: RecordingSinks,
+    created_sandboxes: list[FakeSandbox],
+    fake_clock: FakeClock,
+) -> None:
+    """懒加载⑤：release/shutdown/sweeper 对未 provision 实例零网络、零误伤。"""
+    sandbox = as_fake(manager.ensure_lazy(SESSION, provider="bailian"))
+
+    manager.shutdown()
+    fake_clock.advance(600)
+    assert manager.evaluate_idle() == ()
+    assert sandbox.calls == []  # shutdown / 空闲清扫均跳过未 provision 实例
+    assert manager.phase(SESSION) == "none"
+
+    manager.release(SESSION, reason="user")
+
+    assert sandbox.calls == []  # release 零网络（provider 侧无实例可 kill）
+    assert manager.phase(SESSION) == "killed"
+    assert manager.get(SESSION) is None
+    assert manager.sessions() == ()
+    assert manager.open_usage_segment(SESSION) is None  # 无计费段可封
+    assert sinks.lifecycle[-1].phase == "killed"
+
+
+def test_status_and_probe_of_unprovisioned_instance(manager: SandboxManager) -> None:
+    """懒加载⑤：未 provision 实例的 status/probe 如实回报 none，不炸也不误标 crashed。"""
+    as_fake(manager.ensure_lazy(SESSION, provider="bailian"))
+
+    status = manager.status(SESSION)
+    assert status.phase == "none"
+    assert status.sandbox_id is None
+    assert status.available is False
+
+    probe = manager.probe(SESSION)
+    assert probe.phase == "none"
+    assert probe.available is False
+    assert manager.phase(SESSION) == "none"  # 未 provision ≠ 不可用，不得标 crashed
+
+
+def test_ensure_different_sessions_do_not_block(tmp_root: Path, sinks: RecordingSinks) -> None:
+    """S2 分片锁：会话 A 的 provision 卡在 gate 时，会话 B 的 ensure 必须照常完成。
+
+    若锁退化成全局一把（粒度错误），B 会等 A 的 gate 超时（10s）——用 B 的耗时上界
+    断言区分「分片锁」与「全局锁」两种实现。
+    """
+    gate_a = threading.Event()
+    sandboxes: dict[str, _SlowCreateSandbox] = {}
+
+    def gated_factory(provider: SandboxProvider, session_id: str) -> LcodeSandbox:
+        sandbox = _SlowCreateSandbox(
+            root=tmp_root,
+            provider=provider,
+            session_id=session_id,
+            create_gate=gate_a if session_id == SESSION else None,
+        )
+        sandboxes[session_id] = sandbox
+        return sandbox
+
+    manager = SandboxManager(
+        factory=gated_factory, idle_pause_seconds=60, on_lifecycle=sinks.on_lifecycle
+    )
+    results: list[LcodeSandbox] = []
+
+    def worker_a() -> None:
+        client, _needs = manager.ensure(SESSION, provider="bailian")
+        results.append(client)
+
+    thread_a = threading.Thread(target=worker_a, name="ensure-A")
+    thread_a.start()
+    sandbox_a: _SlowCreateSandbox | None = None
+    for _ in range(200):  # 等 A 真正进入 create（在 gate 上等待）
+        candidate = sandboxes.get(SESSION)
+        if candidate is not None and candidate.enter_create.wait(timeout=0.05):
+            sandbox_a = candidate
+            break
+        sleep(0.01)  # 字典项尚未出现时让出 GIL，防止空转烧完轮数
+    assert sandbox_a is not None, "A 未在期限内进入 provision"
+
+    start = perf_counter()
+    ensured_b, _needs_b = manager.ensure(SESSION_B, provider="bailian")
+    elapsed_b = perf_counter() - start
+
+    assert elapsed_b < 2.0, f"ensure(B) 被 A 的 provision 阻塞 {elapsed_b:.2f}s（分片失效）"
+    assert manager.get(SESSION_B) is ensured_b
+    assert sandboxes[SESSION_B].state.created is True
+    assert manager.get(SESSION) is None  # A 仍在 gate 上：未登记，B 也没等它
+
+    gate_a.set()
+    thread_a.join(timeout=5)
+    assert not thread_a.is_alive(), "A 的 ensure 未在放行后收敛"
+    assert results[0] is sandboxes[SESSION]
+    assert manager.get(SESSION) is sandboxes[SESSION]
+    assert sandboxes[SESSION].calls == ["create"]  # A 的 provision 只发生一次
+
+
+class _RecordingEnsureManager:
+    """记录 ensure_lazy 调用线程与入参的 manager 替身（run 层 to_thread 语义断言用）。"""
+
+    def __init__(self) -> None:
+        self.backend = object()
+        self.calls: list[tuple[int, str, str | None, str | None]] = []
+
+    def ensure_lazy(
+        self,
+        session_id: str,
+        *,
+        provider: str | None = None,
+        persisted_sandbox_id: str | None = None,
+    ) -> object:
+        self.calls.append((threading.get_ident(), session_id, provider, persisted_sandbox_id))
+        return self.backend
+
+
+async def test_run_service_ensure_backend_offloads_to_thread() -> None:
+    """S1：_ensure_backend 经 asyncio.to_thread 卸载——ensure_lazy 不在事件循环线程执行。
+
+    同时锁住入参转发：launch 的 session_id / provider / persisted_sandbox_id 原样到达
+    manager.ensure_lazy（懒加载语义：只登记不 provision，persisted id 作 adopt 注入）。
+    """
+    loop_thread = threading.get_ident()
+    fake_manager = _RecordingEnsureManager()
+    service = RunService(
+        cast("Any", None), pipeline=cast("Any", None), manager=cast("Any", fake_manager)
+    )
+    launch = RunLaunch(
+        session_id=SESSION,
+        run_id="33333333-3333-4333-8333-333333333333",
+        content="你好",
+        model="qwen3.7-plus",
+        reasoning_effort="off",
+        provider="bailian",
+        persisted_sandbox_id="sbx-from-previous-life",
+    )
+
+    backend = await service._ensure_backend(launch)
+
+    assert backend is fake_manager.backend
+    assert len(fake_manager.calls) == 1
+    call_thread, call_session, call_provider, call_persisted = fake_manager.calls[0]
+    assert call_thread != loop_thread, "ensure_lazy 在事件循环线程上执行了（to_thread 未生效）"
+    assert call_session == SESSION
+    assert call_provider == "bailian"
+    assert call_persisted == "sbx-from-previous-life"
+
+
 # =============================================================== 适配器薄翻译（注入式单测）
 #
 # 真百炼 / 真 OpenSandbox 冒烟单列 `integration/test_sandbox_real.py`（requires_* 标记）；
@@ -940,6 +1669,7 @@ def _opensandbox(
     handle: _FakeOSHandle,
     *,
     resume_factory: Callable[..., Any] | None = None,
+    connect_factory: Callable[..., Any] | None = None,
     image: str = "python:3.11",
     **cfg_overrides: str | int | float,
 ) -> OpenSandboxSandbox:
@@ -948,6 +1678,7 @@ def _opensandbox(
         image=image,
         sandbox_factory=lambda *args, **kwargs: handle,
         resume_factory=resume_factory,
+        connect_factory=connect_factory,
     )
 
 
@@ -1244,6 +1975,143 @@ def test_bailian_lifecycle_calls_sdk(monkeypatch: pytest.MonkeyPatch) -> None:
     assert handle.calls == ["pause", "connect", "kill"]
 
 
+# ------------------------------------------------------------ 适配器懒 provision
+
+
+def test_bailian_lazy_provision_creates_on_first_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """懒加载②（适配器面）：未 create 即执行命令 → 先 create 再跑命令，恰好一次。"""
+    monkeypatch.setenv(FAKE_KEY_ENV, "unit-test-fake-key")
+    handle = _FakeE2BHandle(sandbox_id="e2b-lazy-1", stdout_chunks=("lazy-out\n",))
+    factory_calls: list[int] = []
+
+    def factory(**kwargs: object) -> _FakeE2BHandle:
+        factory_calls.append(1)
+        return handle
+
+    notices: list[str] = []
+    sandbox = BailianSandbox(settings=_cfg(), sandbox_factory=factory)
+    sandbox.set_provision_observer(lambda notice: notices.append(notice.phase))
+
+    result = sandbox.run_command("ls")
+
+    assert result.output == "lazy-out\n"
+    assert len(factory_calls) == 1  # create 恰好一次
+    assert sandbox.provisioned is True
+    assert sandbox.id == "e2b-lazy-1"
+    assert notices == ["creating", "running"]
+
+    sandbox.run_command("ls")  # 幂等：不再触发任何 provision 通知
+    assert len(factory_calls) == 1
+    assert notices == ["creating", "running"]
+
+
+def test_bailian_lazy_provision_resumes_paused_instance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """懒加载③（适配器面）：paused 实例首次使用时懒 resume（handle.connect），不 create。"""
+    monkeypatch.setenv(FAKE_KEY_ENV, "unit-test-fake-key")
+    handle = _FakeE2BHandle()
+    sandbox = _bailian(handle)
+    sandbox.create()
+    sandbox.pause()
+    assert handle.calls == ["pause"]
+
+    notices: list[str] = []
+    sandbox.set_provision_observer(lambda notice: notices.append(notice.phase))
+
+    result = sandbox.run_command("ls")
+
+    assert result.exit_code == 0
+    assert handle.calls == ["pause", "connect", "run"]  # resume 走 connect，无第二次 create
+    assert notices == ["resumed"]
+    assert sandbox.paused is False
+
+
+def test_bailian_lazy_provision_failure_latches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """懒加载④（适配器面）：provision 失败烙死——工厂不再被二次调用（防孤儿沙箱）。"""
+    monkeypatch.setenv(FAKE_KEY_ENV, "unit-test-fake-key")
+    factory_calls: list[int] = []
+    auth = AuthenticationException("401")
+
+    def factory(**kwargs: object) -> _FakeE2BHandle:
+        factory_calls.append(1)
+        raise auth
+
+    notices: list[str] = []
+    sandbox = BailianSandbox(settings=_cfg(), sandbox_factory=factory)
+    sandbox.set_provision_observer(lambda notice: notices.append(notice.phase))
+
+    with pytest.raises(SandboxConfigurationError):
+        sandbox.run_command("ls")
+    with pytest.raises(SandboxConfigurationError):
+        sandbox.run_command("ls")
+
+    assert len(factory_calls) == 1
+    assert notices == ["creating", "crashed"]
+
+
+def test_bailian_lazy_adopt_failure_falls_back_to_create(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1（适配器面）：adopt 报 SandboxNotFound → 同一次首次使用内降级 create 兜底。
+
+    成功通知 (running, reason="recreated")；persist id 只消费一次，不再重试 adopt。
+    """
+    monkeypatch.setenv(FAKE_KEY_ENV, "unit-test-fake-key")
+    fresh = _FakeE2BHandle(sandbox_id="e2b-fresh-1")
+    calls: list[str] = []
+
+    def connect_factory(sandbox_id: str, **kwargs: object) -> _FakeE2BHandle:
+        calls.append(f"adopt:{sandbox_id}")
+        raise SandboxNotFoundException(f"404: {sandbox_id}")
+
+    def sandbox_factory(**kwargs: object) -> _FakeE2BHandle:
+        calls.append("create")
+        return fresh
+
+    notices: list[tuple[str, str | None]] = []
+    sandbox = BailianSandbox(
+        settings=_cfg(), connect_factory=connect_factory, sandbox_factory=sandbox_factory
+    )
+    sandbox.set_pending_adopt_id("e2b-dead-1")
+    sandbox.set_provision_observer(lambda notice: notices.append((notice.phase, notice.reason)))
+
+    result = sandbox.run_command("ls")
+
+    assert result.exit_code == 0
+    assert calls == ["adopt:e2b-dead-1", "create"]  # 降级 create 恰好一次
+    assert sandbox.id == "e2b-fresh-1"
+    assert notices == [("creating", None), ("running", "recreated")]
+
+
+def test_opensandbox_lazy_provision_creates_on_first_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """懒加载②（opensandbox 面）：未 create 即执行命令 → 先 create 再跑命令，恰好一次。"""
+    monkeypatch.setenv(FAKE_KEY_ENV, "unit-test-fake-key")
+    handle = _FakeOSHandle(execution_text="os-lazy\n")
+    factory_calls: list[int] = []
+
+    def factory(*args: Any, **kwargs: Any) -> _FakeOSHandle:
+        factory_calls.append(1)
+        return handle
+
+    notices: list[str] = []
+    sandbox = OpenSandboxSandbox(settings=_cfg(), image="python:3.11", sandbox_factory=factory)
+    sandbox.set_provision_observer(lambda notice: notices.append(notice.phase))
+
+    result = sandbox.run_command("ls")
+
+    assert result.output == "os-lazy\n"
+    assert len(factory_calls) == 1
+    assert sandbox.provisioned is True
+    assert notices == ["creating", "running"]
+
+
 # ---- OpenSandbox（自有协议）----
 
 
@@ -1402,3 +2270,91 @@ def test_opensandbox_upload_download_partial_success(monkeypatch: pytest.MonkeyP
     downloads = sandbox.download_files(["a.txt", "missing.txt"])
     assert downloads[0].content == b"A2"  # 上传覆盖写
     assert downloads[1].error == "file_not_found"
+
+
+# -------------------------------------------------------------------- S3 适配器 adopt
+
+
+def test_bailian_adopt_connects_by_id_with_connection_kwargs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """S3：adopt 走注入的 connect 替身，kwargs = 连接参数面（无 template/timeout）。"""
+    monkeypatch.setenv(FAKE_KEY_ENV, "unit-test-fake-key")
+    captured: dict[str, object] = {}
+
+    def connect_factory(sandbox_id: str, **kwargs: object) -> _FakeE2BHandle:
+        captured["sandbox_id"] = sandbox_id
+        captured.update(kwargs)
+        return _FakeE2BHandle(sandbox_id=sandbox_id)
+
+    sandbox = BailianSandbox(
+        settings=_cfg(bailian_template="tmpl-x"),  # template 只属于 create，adopt 不带
+        connect_factory=connect_factory,
+    )
+
+    sandbox.adopt("e2b-adopt-1")
+
+    assert captured["sandbox_id"] == "e2b-adopt-1"
+    assert captured["api_url"] == FAKE_BAILIAN_API_URL
+    # 占位 api_key + 真实鉴权头 + 关闭客户端预校验（与 create 同源，NFR-004）
+    assert captured["api_key"] == "e2b_0"
+    assert captured["headers"] == {"Authorization": "Bearer unit-test-fake-key"}
+    assert captured["validate_api_key"] is False
+    assert "template" not in captured
+    assert "timeout" not in captured
+    assert sandbox.id == "e2b-adopt-1"
+    assert sandbox.sandbox_id == "e2b-adopt-1"
+
+
+def test_bailian_adopt_missing_sandbox_translates_to_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """S3：持久 id 已被回收 → SandboxNotFoundException 归一为 SandboxUnavailable（manager 转重建的输入）。"""
+    monkeypatch.setenv(FAKE_KEY_ENV, "unit-test-fake-key")
+
+    def connect_factory(sandbox_id: str, **kwargs: object) -> _FakeE2BHandle:
+        raise SandboxNotFoundException(f"404: sandbox {sandbox_id} not found")
+
+    sandbox = BailianSandbox(settings=_cfg(), connect_factory=connect_factory)
+
+    with pytest.raises(SandboxUnavailable):
+        sandbox.adopt("e2b-gone")
+
+
+def test_bailian_adopt_rejects_provisioned_instance(monkeypatch: pytest.MonkeyPatch) -> None:
+    """S3：已 provision 的实例 adopt 与 create 互斥（相位机编程错误面）。"""
+    monkeypatch.setenv(FAKE_KEY_ENV, "unit-test-fake-key")
+    sandbox = _bailian(_FakeE2BHandle())
+    sandbox.create()
+
+    with pytest.raises(SandboxLifecycleError):
+        sandbox.adopt("e2b-adopt-2")
+
+
+def test_opensandbox_adopt_connects_by_id_via_connect_factory(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """S3：adopt 走 **connect** 类方法注入点按 id 取句柄（无状态迁移；running 沙箱直连）。
+
+    不走 resume：resume 是服务端 paused 语义的状态迁移（评审项 1），对 running 沙箱
+    会拒绝/未定义——替身按 connect 语义只回句柄、不模拟状态迁移。
+    """
+    monkeypatch.setenv(FAKE_KEY_ENV, "unit-test-fake-key")
+    new = _FakeOSHandle(sandbox_id="os-adopt-1", state="RUNNING")
+    captured: dict[str, object] = {}
+
+    def connect_factory(sandbox_id: str, **kwargs: object) -> _FakeOSHandle:
+        captured.update({"sandbox_id": sandbox_id, **kwargs})
+        return new
+
+    sandbox = _opensandbox(_FakeOSHandle(sandbox_id="os-old"), connect_factory=connect_factory)
+
+    sandbox.adopt("os-adopt-1")
+
+    assert captured["sandbox_id"] == "os-adopt-1"
+    assert captured["connection_config"] is not None
+    assert sandbox.id == "os-adopt-1"
+    assert sandbox.status().phase == "running"  # 状态读到的是新句柄（行为面证明句柄已换）
+    # 已 provision 的实例 adopt 与 create 互斥
+    with pytest.raises(SandboxLifecycleError):
+        sandbox.adopt("os-adopt-2")

@@ -34,10 +34,11 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
 from sqlalchemy import Select, func, select
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import sandbox_settings
-from app.core.logger import service_logger
+from app.core.db import get_session_factory
+from app.core.logger import BusinessLog, service_logger
 from app.exception.common import InvalidArgument
 from app.exception.session import SessionNotFound
 from app.models import Run, Session
@@ -266,3 +267,40 @@ class SessionService(BaseService):
                 "last_active_at": row.last_active_at,
             }
         )
+
+
+async def update_session_sandbox_id_short_tx(
+    session_id: str,
+    sandbox_id: str,
+    *,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+) -> None:
+    """运行时上下文写 `sessions.sandbox_id`（沙箱相位 running/resumed/recreated 时；S3）。
+
+    短事务模式（同 `cost_service.record_sandbox_usage_short_tx`）：自取短会话立即
+    commit。它是「进程重启后按持久 id adopt 重连」的辅助事实源（权威事实在 manager
+    内存账本与事件流），**写失败只记日志不抛**——不得拖垮相位机或 run 链路；会话行
+    已不存在（并发删除）按 no-op 处理。
+    """
+    factory = session_factory or get_session_factory()
+    try:
+        async with factory() as session:
+            try:
+                key = uuid.UUID(session_id)
+            except ValueError:
+                return  # 非法 id 不落库也不报错（调用面传来的恒是 wire id）
+            row = await session.get(Session, key)
+            if row is None:
+                return
+            row.sandbox_id = sandbox_id
+            await session.commit()
+    except Exception as exc:  # noqa: BLE001 —— 持久 id 落库失败不拖垮生命周期
+        BusinessLog(
+            message=(
+                "sessions.sandbox_id 落库失败（重启后首工具调用的懒 adopt 可能失效："
+                "持久 id 未更新，届时将降级 create 重建）"
+            ),
+            action="记录沙箱持久id",
+            entity="session",
+            entity_id=session_id,
+        ).warning(exc)

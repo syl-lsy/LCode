@@ -87,6 +87,7 @@ TABLES: list[TableSpec] = [
             ColumnSpec(name="reasoning_effort", type="varchar", enum_values=["off", "low", "medium", "high"]),
             ColumnSpec(name="approval_mode", type="varchar", enum_values=["manual", "auto"], default="'manual'"),
             ColumnSpec(name="sandbox_provider", type="varchar", enum_values=["bailian", "opensandbox"]),
+            ColumnSpec(name="sandbox_id", type="text", nullable=True),
             ColumnSpec(name="updated_at", type="timestamptz", default="now()"),
             ColumnSpec(name="last_active_at", type="timestamptz", default="now()"),
         ],
