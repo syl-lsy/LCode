@@ -167,8 +167,11 @@ describe('AppShell · 路由与三栏（任务 #2）', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('session-header')).toBeInTheDocument();
+      // currentId 由 SessionView 挂载 effect 写入（App.tsx setCurrent），晚于 header
+      // 的 DOM 提交——断言必须在 waitFor 内等，否则会落在「header 已渲染、effect
+      // 未跑」的调度窗口读到 null（CI flake 根因，慢机/节流可复现）
+      expect(useSessionStore.getState().currentId).toBe('sess-new');
     });
-    expect(useSessionStore.getState().currentId).toBe('sess-new');
     // 事件流连接随后建立（MSW 空流 stub）：连接态从 idle 出发
     expect(['idle', 'connecting', 'open', 'reconnecting']).toContain(useConnStore.getState().state);
   });
