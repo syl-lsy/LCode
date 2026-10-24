@@ -1,0 +1,70 @@
+/* ==========================================================================
+   web/src/features/workbench/terminal/terminal-panel.css — 终端双容器页面级样式
+   来源：design/prototype/terminal-panel.html（<style> 页面级类原样迁移，类名一致）。
+
+   覆盖面（F2 终端两套容器并存，修订 RD#15）：
+   - 态 A 主列底部 dock：.dock / .dock-bar / .dock-tab / .dock-panel / .dock-head
+   - 态 B 右侧面板终端功能标签：.bash-row / .t-tabs / .t-tab / .sh（shell 徽标）
+   - 终端回显共用件：.t-body / .t-input / .caret 与调色类 .g .b .y .dim .w
+     （side-panels.html 同定义亦见，以 terminal-panel.html 本页为准）
+
+   未迁移清单（本批裁决，逐条注明）：
+   - [hidden] { display:none !important }（原型 dock 两态靠 hidden 属性切换；
+     React 侧用条件渲染等价实现，hidden 语义天然成立，不需要该兜底规则）
+   - .frame / .railbar / .main / .topbar / .skl* / .note-main（原型页演示骨架，
+     非产品 UI；产品壳层由 app-shell.css / 布局组件承担）
+   - .drag-sep（跨页共享类，components.css 已有同定义）
+   - .p-head / .strip / .panel-tab / .p-body / .chooser（面板骨架与选择器，
+     side-panels.css 承担；terminal-panel.html 同定义不重复迁移）
+
+   亮（:root）暗（.dark）双主题逐处核对：全部取值走 var(--*) 语义 token。
+   ========================================================================== */
+
+/* ---------- 态 A · 主列底部 dock（R10 唯一例外，RD#15） ---------- */
+.dock { border-top: 1px solid var(--color-border); background: var(--color-panel); flex: none; }
+
+/* dock 条（收起态）：一行「终端」子标签，点击展开 */
+.dock-bar { display: flex; align-items: center; gap: 3px; padding: 4px 8px; }
+.dock-tab { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 9px; border-radius: var(--radius-sm);
+            font-family: var(--font-mono); font-size: var(--text-ui-2xs); color: var(--color-foreground-subtle); }
+.dock-tab:hover { background: var(--color-surface-hover); color: var(--color-foreground-strong); }
+.dock-tab .chev { color: var(--color-foreground-subtlest); }
+
+/* dock 展开态终端区：~200px */
+.dock-panel { height: 200px; display: flex; flex-direction: column; }
+.dock-head { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-bottom: 1px solid var(--color-border); flex: none; }
+.dock-head .sp { flex: 1; }
+.dock-tab.on { background: var(--color-surface-hover); color: var(--color-terminal-fg); }
+.dock-panel .t-body { flex: 1; min-height: 0; }
+
+/* ---------- 态 B · 右侧面板终端功能标签（bash 子标签行 + shell 类型徽标） ---------- */
+.bash-row { display: flex; align-items: center; gap: 5px; padding: 7px 10px; border-bottom: 1px solid var(--color-border); flex: none; }
+.bash-row .tt { font-size: var(--text-ui-2xs); color: var(--color-foreground-subtle); flex: none; }
+.t-tabs { display: flex; align-items: center; gap: 2px; flex: 1; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.t-tabs::-webkit-scrollbar { display: none; }
+.t-tab { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px; border-radius: var(--radius-sm);
+         font-family: var(--font-mono); font-size: var(--text-ui-2xs); color: var(--color-foreground-subtle); flex: none; }
+.t-tab.on { background: var(--color-surface-hover); color: var(--color-terminal-fg); }
+.t-tab .x { color: var(--color-foreground-subtlest); display: inline-flex; }
+.t-tab .x:hover { color: var(--color-terminal-fg); }
+
+/* shell 类型徽标（zsh / bash） */
+.sh { display: inline-flex; align-items: center; font-family: var(--font-mono); font-size: var(--text-ui-2xs); line-height: 1;
+      padding: 2px 4px; border: 1px solid var(--color-border); border-radius: var(--radius-xs);
+      background: var(--color-surface); color: var(--color-foreground-subtlest); flex: none; }
+
+/* ---------- 终端回显共用件（态 A dock 与态 B 面板同一套） ---------- */
+.t-body { flex: 1; overflow-y: auto; padding: 10px 14px; font-family: var(--font-mono); font-size: var(--code-font-size); line-height: 1.75;
+          color: var(--color-terminal-fg); background: var(--color-terminal-bg); white-space: pre-wrap; word-break: break-all; }
+.g { color: var(--color-terminal-green); }
+.b { color: var(--color-terminal-blue); }
+.y { color: var(--color-terminal-yellow); }
+.dim { color: var(--color-terminal-bright-black); }
+.w { color: var(--color-terminal-bright-white); }
+.caret { display: inline-block; width: 7px; height: 14px; background: var(--color-terminal-cursor); vertical-align: -2px;
+         animation: ic-pulse 1.1s steps(1) infinite; }
+/* P0 只读回显：交互输入归 P1（sandbox_output 无输入通道），输入行为形态占位 */
+.t-input { display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--color-border); padding: 8px 14px; flex: none;
+           font-family: var(--font-mono); font-size: var(--code-font-size); }
+.t-input input { flex: 1; min-width: 0; background: none; border: 0; outline: none; color: var(--color-terminal-fg);
+                 font-family: var(--font-mono); font-size: var(--code-font-size); }

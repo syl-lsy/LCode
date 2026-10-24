@@ -4,14 +4,16 @@ import type { DiffVerdictRequest } from '@contracts/rest';
 
 import { getDiffReview, postVerdict } from '@/api/diffReviews';
 import { ApiError } from '@/api/http';
+import { GIT_MARK } from '@/components/DiffGitMark';
 import { DiffSummaryBar } from '@/components/DiffSummaryBar';
 import { EmptyState } from '@/components/EmptyState';
+import { Icon } from '@/components/Icon';
 import { Spinner } from '@/components/Spinner';
 
 import { useDiffStore } from '../store';
 import type { DiffReviewState } from '../store';
 
-import { CHANGE_BADGE, CHANGE_LABEL, DiffFileView } from './DiffFileView';
+import { DiffFileView, type DiffFileSummaryEntry } from './DiffFileView';
 
 /**
  * DiffReviewPanel（M3 Phase 4）：workbench「审查」标签的真面板。
@@ -20,7 +22,10 @@ import { CHANGE_BADGE, CHANGE_LABEL, DiffFileView } from './DiffFileView';
  * patch 懒加载缓存。reviewId 来自标签 id（`review:<reviewId>`，tabIdOf 规则）。
  *
  * - 顶部 DiffSummaryBar（round/baseline/totals/文件数/binary 数）；
- * - 文件列表可点选、可滚动；选中文件下方懒加载单文件详情（DiffFileView）；
+ * - 文件行结构（F15/R3§F，changed-files.html .rv-row）= Git 状态方块字母
+ *   （GIT_MARK，--color-git-* 族）+ 文件名 + 路径 + 「+N -N」徽标 + 复制路径钮 +
+ *   chevron；点击行展开/收起**行内 diff**（.rv-diff > DiffFileView 懒加载，
+ *   chevron 随展开态旋转，可多行同开）；
  * - 裁决区（仅 pending）：接受 / 驳回（意见可选）；提交中禁用防重复；失败展示
  *   `错误（code）：message` 并保留输入；成功后**以响应 DTO 为准**回填（后端在
  *   会话有活动 run 时会把系统注记追加进 feedback——事件/POST 响应/详情携带同一
@@ -180,6 +185,103 @@ function ResolvedView({ review }: { review: DiffReviewState }) {
   );
 }
 
+/** 行内复制路径钮（真实剪贴板写入；stopPropagation 避免触发行展开）。 */
+function CopyPathButton({ path }: { path: string }) {
+  const [copied, setCopied] = useState(false);
+  const copy = (): void => {
+    const clip = typeof navigator !== 'undefined' ? navigator.clipboard : undefined;
+    if (clip === undefined) return;
+    void clip.writeText(path).then(
+      () => {
+        setCopied(true);
+        window.setTimeout(() => setCopied(false), 1200);
+      },
+      () => setCopied(false),
+    );
+  };
+  return (
+    <button
+      type="button"
+      data-testid="diff-file-copy"
+      className="chip-btn flex-none"
+      title={`复制路径：${path}`}
+      onClick={(event) => {
+        event.stopPropagation();
+        copy();
+      }}
+    >
+      <Icon name="copy" size={11} /> {copied ? '已复制' : '复制'}
+    </button>
+  );
+}
+
+/** 路径 → { 文件名, 目录（含尾斜杠） }（.rv-row 的 fn/pth 两段）。 */
+function splitPath(path: string): { readonly name: string; readonly dir: string | null } {
+  const idx = path.lastIndexOf('/');
+  if (idx < 0) return { name: path, dir: null };
+  return { name: path.slice(idx + 1), dir: path.slice(0, idx + 1) };
+}
+
+/** 审查面板单文件行 + 行内 diff 展开区（F15/R3§F 行结构）。 */
+function FileRow({
+  reviewId,
+  file,
+  expanded,
+  onToggle,
+}: {
+  reviewId: string;
+  file: DiffFileSummaryEntry;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const { name, dir } = splitPath(file.path);
+  return (
+    <div>
+      <div
+        data-testid="diff-file-item"
+        data-expanded={expanded}
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        title={expanded ? '收起行内 diff' : '展开行内 diff'}
+        className="rv-row"
+        onClick={onToggle}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            onToggle();
+          }
+        }}
+      >
+        <span className="git-mark flex-none" style={{ color: GIT_MARK[file.change].color }}>
+          {GIT_MARK[file.change].letter}
+        </span>
+        <span className="fn flex-none">{name}</span>
+        {dir !== null && <span className="pth flex-none">{dir}</span>}
+        <span className="grow" aria-hidden="true" />
+        <span className="badge badge-add flex-none">+{file.additions}</span>
+        <span className="badge badge-del flex-none">-{file.deletions}</span>
+        <CopyPathButton path={file.path} />
+        <span
+          className="chev"
+          aria-hidden="true"
+          style={{
+            transform: expanded ? 'rotate(180deg)' : undefined,
+            transition: 'transform var(--dur) var(--ease)',
+          }}
+        >
+          <Icon name="chevron-down" size={11} />
+        </span>
+      </div>
+      {expanded && (
+        <div className="rv-diff" data-testid="diff-file-inline">
+          <DiffFileView reviewId={reviewId} summary={file} />
+        </div>
+      )}
+    </div>
+  );
+}
+
 export interface DiffReviewPanelProps {
   /** 审查 id（来自标签 id `review:<reviewId>`） */
   readonly reviewId: string;
@@ -195,9 +297,20 @@ export function DiffReviewPanel({ reviewId, currentSessionId }: DiffReviewPanelP
   const review = useDiffStore((s) => s.reviews.get(reviewId));
   const upsertFromRest = useDiffStore((s) => s.upsertFromRest);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [notFound, setNotFound] = useState(false);
   const [foreign, setForeign] = useState(false);
   const [attempt, setAttempt] = useState(0);
-  const [selected, setSelected] = useState<string | null>(null);
+  /** 行内展开的文件路径集合（多行可同开；各行 DiffFileView 独立懒加载） */
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
+
+  const toggleExpanded = (path: string): void => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
 
   const hasReview = review !== undefined;
   // 会话防串台（双闸）：store 里已有但属其它会话；或 REST 回填发现会话不符
@@ -224,6 +337,12 @@ export function DiffReviewPanel({ reviewId, currentSessionId }: DiffReviewPanelP
       })
       .catch((error: unknown) => {
         if (cancelled || (error instanceof DOMException && error.name === 'AbortError')) return;
+        // 审查不存在（标签残留/数据被清理，B6 empty-states #1）：呈现「无审查」
+        // 空态（原型文案照抄），刷新钮可重试；其余错误仍走错误态
+        if (error instanceof ApiError && (error.code === 'DIFF_REVIEW_NOT_FOUND' || error.code === 'NOT_FOUND')) {
+          setNotFound(true);
+          return;
+        }
         setLoadError(error instanceof ApiError ? `${error.code}：${error.message}` : String(error));
       });
     return () => {
@@ -231,6 +350,45 @@ export function DiffReviewPanel({ reviewId, currentSessionId }: DiffReviewPanelP
       controller.abort();
     };
   }, [reviewId, hasReview, currentSessionId, upsertFromRest, attempt]);
+
+  const retryFetch = (): void => {
+    setNotFound(false);
+    setLoadError(null);
+    setAttempt((n) => n + 1);
+  };
+
+  // B6 无审查空态（empty-states #1「审查面板 · 非 Git 仓库」文案照抄官方快照）：
+  // 头部 = 未暂存 badge + git 状态过滤 + 刷新钮（重试回填）；LCode 触发场景 =
+  // 审查标签在场但 diffStore/REST 均无该审查数据
+  if (notFound && review === undefined) {
+    return (
+      <section data-testid="diff-review-panel" className="h-full">
+        <EmptyState
+          testId="diff-review-empty"
+          icon={<Icon name="review-check" size={16} />}
+          title="当前 workspace 不在 Git 仓库中"
+          description="打开一个 Git 仓库目录后，这里会展示当前 workspace 作用域内的改动。"
+          head={
+            <>
+              <span className="badge">未暂存</span>
+              <span className="t">git 状态过滤</span>
+              <span style={{ flex: 1 }} />
+              <button
+                type="button"
+                className="icon-btn"
+                style={{ width: 22, height: 22 }}
+                data-testid="diff-review-empty-refresh"
+                title="刷新"
+                onClick={retryFetch}
+              >
+                <Icon name="refresh" size={11} />
+              </button>
+            </>
+          }
+        />
+      </section>
+    );
+  }
 
   if (loadError !== null) {
     return (
@@ -279,11 +437,7 @@ export function DiffReviewPanel({ reviewId, currentSessionId }: DiffReviewPanelP
     );
   }
 
-  // 默认选中首个文件（详情懒加载随之拉取）；用户点选后跟随用户
-  const activePath = selected ?? review.files[0]?.path ?? null;
-  const activeSummary =
-    review.files.find((file) => file.path === activePath) ?? null;
-
+  // 行内展开区随行渲染（FileRow 内 DiffFileView 懒加载），无独立详情区
   return (
     <section data-testid="diff-review-panel" className="flex h-full min-h-0 flex-col">
       <div className="flex-none border-b border-border px-3 py-2">
@@ -298,43 +452,18 @@ export function DiffReviewPanel({ reviewId, currentSessionId }: DiffReviewPanelP
       <nav
         data-testid="diff-file-list"
         aria-label="改动文件列表"
-        className="max-h-44 flex-none overflow-y-auto border-b border-border"
+        className="min-h-0 flex-1 overflow-y-auto border-b border-border"
       >
         {review.files.map((file) => (
-          <button
+          <FileRow
             key={file.path}
-            type="button"
-            data-testid="diff-file-item"
-            data-active={file.path === activePath}
-            title={
-              file.old_path !== null ? `${file.old_path} → ${file.path}` : file.path
-            }
-            onClick={() => setSelected(file.path)}
-            className={`flex w-full items-center gap-1.5 px-2 py-1 text-left text-[length:var(--text-ui-xs)] ${
-              file.path === activePath
-                ? 'bg-surface-hover text-foreground-strong'
-                : 'text-foreground-subtle hover:bg-surface-hover'
-            }`}
-          >
-            <span className={`flex-none ${CHANGE_BADGE[file.change]}`}>
-              {CHANGE_LABEL[file.change]}
-            </span>
-            <span className="min-w-0 flex-1 truncate font-mono">
-              {file.old_path !== null ? `${file.old_path} → ${file.path}` : file.path}
-            </span>
-            {file.binary && <span className="badge flex-none">二进制</span>}
-            <span className="flex-none font-mono text-[length:var(--text-ui-2xs)]">
-              <span className="text-diff-added">+{file.additions}</span>
-              <span className="text-diff-removed"> -{file.deletions}</span>
-            </span>
-          </button>
+            reviewId={reviewId}
+            file={file}
+            expanded={expanded.has(file.path)}
+            onToggle={() => toggleExpanded(file.path)}
+          />
         ))}
       </nav>
-      {activeSummary !== null && (
-        <div className="min-h-0 flex-1 overflow-y-auto">
-          <DiffFileView reviewId={reviewId} summary={activeSummary} />
-        </div>
-      )}
       {review.verdict === 'pending' ? (
         <VerdictForm reviewId={reviewId} />
       ) : (

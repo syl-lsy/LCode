@@ -1,12 +1,13 @@
 import { Fragment, useMemo, useState } from 'react';
 
 import { useChatStore, type ChatItem, type ChatToolCardItem } from '../store';
-import { useTodoStore } from '@/features/todo/store';
 import { TodoPanel } from '@/features/todo/components/TodoPanel';
-import { useWorkbenchStore } from '@/features/workbench/store';
+import { useDiffStore } from '@/features/workbench/store';
 import { formatTokens } from '@/lib/formatTokens';
+import { Icon } from '@/components/Icon';
 // 容器例外（A4 §2.2 唯一）：chat 容器可 import 各领域卡片组件
 import { ApprovalCard } from '@/features/approval/components/ApprovalCard';
+import { DiffCardRow } from './DiffCard';
 
 import { useAutoFollow, useStickToBottom } from '../hooks/useStickToBottom';
 
@@ -27,13 +28,13 @@ import { ToolCard } from './ToolCard';
  *
  * - items 顺序表按 kind 分发：message → MessageBubble；toolcard → 连续段收敛进
  *   TimerRow 总折叠区（F3：收起时思考卡+工具卡藏入该行，行文案不变），task 卡
- *   下方挂 SubagentCard 扩展区块（REQ-016）；approval → ApprovalCard（M3：四决策
- *   卡片 + 终态折叠；载荷按 id 取自 approvalStore）；diffcard/compact_note → 就地行
- *   渲染（compact 数值 k/M 人读格式，AC-010-1）；
- * - TodoPanel 悬浮于流区域右上（对齐 zcode-ui 12-todo-panel.png，非独立右栏 tab），
- *   空快照由组件自身零渲染（AC-005-3）；
- * - 贴底四件套（§6.4）：唯一滚动入口 follow()；脱离显示「回到底部 ↓N」FAB；
- * - diffcard 点击 → workbenchStore.openTab（UI 编排 action，A4 §2.2 唯一例外）。
+ *   下方挂 SubagentCard 扩展区块（REQ-016）；approval → ApprovalCard（两变体
+ *   + F14 拒绝闭环折叠；载荷按 id 取自 approvalStore）；diffcard → DiffCardRow
+ *   （changed-files.html .files-card 结构，打开仍开右栏审查标签）；compact_note
+ *   → 就地行渲染（compact 数值 k/M 人读格式，AC-010-1）；
+ * - TodoPanel 状态卡（F13）位于消息流顶部：todo 快照 + diff_ready 更改计数，两者
+ *   皆空时组件自身零渲染（AC-005-3）；
+ * - 贴底四件套（§6.4）：唯一滚动入口 follow()；脱离显示「回到底部」FAB（.to-bottom）。
  */
 
 interface ToolGroup {
@@ -77,46 +78,22 @@ export function groupItems(items: readonly ChatItem[]): RenderGroup[] {
   return groups;
 }
 
-function DiffCardRow({ item }: { item: Extract<ChatItem, { kind: 'diffcard' }> }) {
-  const openTab = useWorkbenchStore((s) => s.openTab);
-  return (
-    <button
-      type="button"
-      data-testid="diff-card"
-      data-verdict={item.verdict}
-      className="mb-2.5 flex w-full items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-left text-[length:var(--text-ui-xs)] hover:border-border-hover"
-      onClick={() =>
-        openTab({ kind: 'review', id: item.id, title: `审查 · 第 ${item.round} 轮` })
-      }
-    >
-      <span aria-hidden="true">🗂</span>
-      <span className="flex-none text-foreground">改动文件（第 {item.round} 轮）</span>
-      <span className="badge flex-none border-diff-added/40 text-diff-added">+{item.additionsTotal}</span>
-      <span className="badge flex-none border-diff-removed/40 text-diff-removed">-{item.deletionsTotal}</span>
-      <span className="ml-auto flex-none text-foreground-subtlest">
-        {item.fileCount} 个文件 · {item.verdict === 'pending' ? '待裁决' : item.verdict === 'accepted' ? '已接受' : '已驳回'} · 点击打开审查标签
-      </span>
-    </button>
-  );
-}
-
 function CompactNoteRow({ item }: { item: Extract<ChatItem, { kind: 'compact_note' }> }) {
   return (
     <div
       data-testid="compact-note"
       data-phase={item.phase}
-      className="mb-2.5 flex items-center gap-2 rounded-md border border-border bg-card px-3 py-1.5 text-[length:var(--text-ui-xs)] text-foreground"
+      /* .compact-row（task-conversation.css，来源 task-conversation.html R14 两态行） */
+      className="compact-row mb-2.5"
     >
       {item.phase === 'started' ? (
         <span className="spinner flex-none" aria-hidden="true" />
       ) : (
-        <span aria-hidden="true" className="flex-none text-success">
-          ✓
-        </span>
+        <Icon name="check" size={12} className="flex-none text-success" />
       )}
       {item.phase === 'started' ? '正在压缩上下文…' : '上下文已压缩'}
       {item.phase === 'finished' && item.beforeTokens !== null && item.afterTokens !== null && (
-        <span className="ml-auto text-[length:var(--text-ui-2xs)] text-foreground-subtlest">
+        <span className="note2">
           约 {formatTokens(item.beforeTokens)} → {formatTokens(item.afterTokens)} tokens
         </span>
       )}
@@ -212,20 +189,41 @@ export function MessageList({ sessionId }: MessageListProps) {
     return map;
   }, [resolved]);
 
-  const hasTodos = useTodoStore((s) => s.snapshot.length > 0);
+  // F13 更改计数（chat 容器例外跨域读数）：本会话最近一次 diff_ready 的全量合计，
+  // 经 props 传给状态面板（diffStore 封闭，todo 域不直读）。
+  const reviews = useDiffStore((s) => s.reviews);
+  const changes = useMemo(() => {
+    let latest: { additions: number; deletions: number; createdAt: string } | null = null;
+    for (const review of reviews.values()) {
+      if (review.sessionId !== sessionId) continue;
+      if (latest === null || review.createdAt > latest.createdAt) {
+        latest = {
+          additions: review.additionsTotal,
+          deletions: review.deletionsTotal,
+          createdAt: review.createdAt,
+        };
+      }
+    }
+    return latest === null ? null : { additions: latest.additions, deletions: latest.deletions };
+  }, [reviews, sessionId]);
+
+  // F1：编辑 chip 仅对最新一条 user 消息可用
+  const latestUserId = useMemo(() => {
+    for (let i = resolved.length - 1; i >= 0; i -= 1) {
+      const item = resolved[i];
+      if (item !== undefined && item.kind === 'message' && item.role === 'user') return item.id;
+    }
+    return null;
+  }, [resolved]);
 
   return (
     <div className="relative min-h-0 flex-1">
-      {hasTodos && (
-        <div className="absolute right-5 top-3 z-10">
-          <TodoPanel />
-        </div>
-      )}
       <div
         ref={stick.containerRef}
         onScroll={stick.onScroll}
         data-testid="message-scroll"
-        className="scroll-thin h-full overflow-y-auto"
+        /* .thread（task-conversation.css，来源 task-conversation.html 消息流滚动容器） */
+        className="thread scroll-thin h-full overflow-y-auto"
       >
         {resolved.length === 0 ? (
           <div className="flex h-full items-center justify-center">
@@ -236,12 +234,16 @@ export function MessageList({ sessionId }: MessageListProps) {
           </div>
         ) : (
           <div className="mx-auto max-w-[760px] px-5 pt-4 pb-2">
+            {/* F13 状态卡：todo 快照 + diff_ready 更改计数，皆空时组件零渲染 */}
+            <TodoPanel changes={changes} />
             {groups.map((group) =>
               group.kind === 'tools' ? (
                 <ToolGroupBlock key={group.key} group={group} activities={subagentActivities} />
               ) : (
                 <Fragment key={group.key}>
-                  {group.item.kind === 'message' && <MessageBubble item={group.item} />}
+                  {group.item.kind === 'message' && (
+                    <MessageBubble item={group.item} isLatestUser={group.item.id === latestUserId} />
+                  )}
                   {group.item.kind === 'approval' && (
                     <ApprovalCard
                       approvalId={group.item.id}
@@ -267,11 +269,12 @@ export function MessageList({ sessionId }: MessageListProps) {
         <button
           type="button"
           data-testid="to-bottom-fab"
-          className="absolute right-6 bottom-3 z-10 flex h-8 w-8 items-center justify-center rounded-full border border-border-hover bg-popover text-foreground-subtle shadow-md hover:text-foreground-strong"
+          /* .to-bottom（task-conversation.css，来源 task-conversation.html R9 悬浮钮） */
+          className="to-bottom"
           onClick={stick.scrollToBottom}
           aria-label={`回到底部（${stick.unreadCount} 条新内容）`}
         >
-          ↓{stick.unreadCount > 0 ? stick.unreadCount : ''}
+          <Icon name="chevron-down" size={14} />
         </button>
       )}
     </div>

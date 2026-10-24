@@ -3,6 +3,7 @@ import { ApiError } from '@/api/http';
 
 import { useModelsStore, type ReasoningEffort } from '../store';
 
+import { Icon } from '@/components/Icon';
 import { Menu } from '@/components/Menu';
 
 /**
@@ -11,12 +12,15 @@ import { Menu } from '@/components/Menu';
  * reasoning-effort 档位随当前模型过滤：模型能力集（ModelInfo.reasoning_efforts，
  * 服务端按 param_support 过滤）之外的档位置灰不可选。切换即 PATCH（sessionId 非空），
  * 以回声为准。
+ *
+ * F7 文案（toolbar-menus 菜单 3 一比一）：UI 档位名 = 关闭/低/高/最高；
+ * 语义档 off/low/medium/high 不变（PRD AC-014-1），medium 呈现为「高」。
  */
 
 const EFFORT_LABEL: Record<ReasoningEffort, string> = {
   off: '关闭',
   low: '低',
-  medium: '中',
+  medium: '高',
   high: '最高',
 };
 
@@ -70,20 +74,20 @@ export function EffortSelector({ sessionId }: EffortSelectorProps) {
       trigger={
         <>
           <span>{EFFORT_LABEL[selected.effort]}</span>
-          <span aria-hidden="true" className="text-foreground-subtlest">
-            ▾
-          </span>
+          {/* 原型口径：class="tool-btn" + .ic.chev（app-shell.html 推理档位钮） */}
+          <Icon name="chevron-down" size={10} className="chev" />
         </>
       }
       triggerClassName="tool-btn"
       triggerLabel="推理档位"
       triggerTestId="effort-selector"
       menuLabel="选择推理档位"
+      direction="up"
       align="left"
+      menuMaxWidth={180}
       items={EFFORT_ORDER.map((effort) => ({
         key: effort,
         label: EFFORT_LABEL[effort],
-        hint: <span className="font-mono">{effort}</span>,
         disabled: !supported.has(effort),
         selected: effort === selected.effort,
         onSelect: () => selectEffort(effort),

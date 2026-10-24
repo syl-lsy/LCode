@@ -4,6 +4,8 @@ import { useNavigate } from 'react-router';
 import { deleteSession } from '@/api/sessions';
 import type { SessionDetail } from '@contracts/rest';
 
+import { Icon } from '@/components/Icon';
+
 /**
  * 会话条目（AC-004-3 / F11）：
  * - 最近活跃时间相对化（刚刚 / N 分钟前 / 当日 HH:mm / MM-DD HH:mm）；
@@ -108,7 +110,7 @@ export function SessionItem({ session, active, onDeleted }: SessionItemProps) {
         className="flex h-5 w-5 flex-none items-center justify-center rounded-sm text-foreground-subtlest opacity-0 hover:bg-surface-hover hover:text-destructive focus-visible:opacity-100 group-hover:opacity-100 disabled:opacity-45"
         onClick={() => void remove()}
       >
-        ×
+        <Icon name="close" size={11} />
       </button>
     </div>
   );

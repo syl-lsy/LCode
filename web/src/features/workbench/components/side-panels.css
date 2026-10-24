@@ -1,0 +1,70 @@
+/* ==========================================================================
+   web/src/features/workbench/components/side-panels.css — 侧边多用面板页面级样式
+   来源：design/prototype/side-panels.html（<style> 页面级类原样迁移，类名一致）。
+
+   覆盖面（R10/RD#45 通用容器 + F25 任务名首标签）：
+   - 面板骨架：.p-head / .strip / .panel-tab（含 .on / .x）/ .p-body
+   - 标签条特型：.panel-tab.task-tab（任务名首标签，F25）/ .panel-tab.sa-tab +
+     .sdot（子智能体运行光点，M4 启用）/ .panel-tab.p2-tab（浏览器 P2 灰角标）
+   - 任务名标签内容占位块：.tlabel / .tcard / .tskl / .tbadges / .tph
+   - 「打开标签页」选择器浮层：.chooser（RD#15 不迁移，面板内右上）
+
+   微差裁决（逐条注明）：
+   - .chooser 取 side-panels.html 全量定义（top:46px 相对面板 = 头条 40px 之下，
+     与 terminal-panel.html 的 p-body 内 top:10px 同一视觉位；后者变体不迁）
+   - .t-body / .t-input / .sh 等 shell 徽标与回显族随 terminal-panel.css 迁移
+     （terminal 领域单源，本页同定义不重复）
+   - .rev-* / .diff / .dl（审查标签内容，changed-files.css 口径已由审查面板
+     DiffReviewPanel 承担）；.cv-* / .tab-bar / .pstep / .dec / .sa-head /
+     .mini-msg / .mini-tool / .think / .mini-md 等标签内完整内容件（源代码查看 /
+     完整计划 / 子智能体进度 / 辅助对话的完整形态）随各里程碑接入时迁移，
+     当前这些类型为结构化占位（PlaceholderPane），不提前迁移
+
+   亮（:root）暗（.dark）双主题逐处核对：全部取值走 var(--*) 语义 token。
+   ========================================================================== */
+
+/* ---------- 面板骨架（R10：右侧单一公用面板） ---------- */
+.p-head { display: flex; align-items: center; gap: 2px; height: 40px; padding: 0 4px 0 6px; border-bottom: 1px solid var(--color-border); flex: none; }
+.strip { display: flex; align-items: center; gap: 2px; overflow-x: auto; scrollbar-width: none; flex: 1; min-width: 0; }
+.strip::-webkit-scrollbar { display: none; }
+.p-body { flex: 1; overflow-y: auto; position: relative; display: flex; flex-direction: column; }
+
+.panel-tab { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 8px; border-radius: var(--radius-sm);
+             font-size: var(--text-ui-2xs); color: var(--color-foreground-subtle); flex: none; white-space: nowrap; }
+.panel-tab:hover { background: var(--color-surface-hover); }
+.panel-tab.on { background: var(--color-card); color: var(--color-foreground-strong); border: 1px solid var(--color-border); }
+.panel-tab .x { color: var(--color-foreground-subtlest); display: inline-flex; }
+
+/* ---------- 标签条特型 ---------- */
+/* 任务名标签（F25/R3§G）：tablist 首位；round3 记录无 × 号，内容待实测 */
+.panel-tab.task-tab { max-width: 158px; }
+.panel-tab.task-tab .tt { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+/* 子智能体进度标签（tab 名 = 任务名，RD#12）+ 运行光点（.sdot 随 M4 子智能体
+   标签启用；P0 占位标签不带运行语义光点，避免伪「运行中」） */
+.panel-tab.sa-tab { max-width: 138px; }
+.panel-tab.sa-tab .tt { overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.sdot { width: 6px; height: 6px; border-radius: 50%; background: var(--color-brand); box-shadow: var(--glow-running); flex: none; }
+/* 浏览器标签（P2 线框，灰角标） */
+.panel-tab.p2-tab { color: var(--color-foreground-subtlest); }
+
+/* ---------- 任务名标签内容占位块（任务概要 / 调用轨迹，F25 待实测） ---------- */
+.tlabel { font-size: var(--text-ui-2xs); color: var(--color-foreground-subtlest); padding: 12px 15px 6px; }
+.tcard { margin: 0 15px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-card); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.tcard .ttitle { font-size: var(--text-ui-sm); font-weight: 600; color: var(--color-foreground-strong); }
+.tskl i { display: block; height: 8px; border-radius: 4px; background: var(--color-surface-hover); margin: 6px 0 0; }
+.tskl i.s { width: 46%; }
+.tskl i.m { width: 74%; }
+.tbadges { display: flex; gap: 5px; flex-wrap: wrap; }
+.tph { margin: 0 15px 14px; border: 1px dashed var(--color-border-hover); border-radius: var(--radius-md); padding: 20px 10px; text-align: center;
+       font-family: var(--font-mono); font-size: var(--text-ui-2xs); color: var(--color-foreground-subtlest); }
+
+/* ---------- 「打开标签页」选择器浮层（面板内右上，RD#15 不迁移） ---------- */
+.chooser { position: absolute; top: 46px; right: 10px; z-index: 40; width: 218px; max-height: calc(100% - 60px); overflow-y: auto;
+           border: 1px solid var(--color-border-hover); border-radius: var(--radius-lg);
+           background: var(--color-popover); box-shadow: var(--shadow-lg); padding: 14px; }
+.chooser h2 { font-size: var(--text-ui-base); margin-bottom: 4px; }
+.chooser p { font-size: var(--text-ui-2xs); color: var(--color-foreground-subtle); margin-bottom: 12px; }
+.chooser button { display: flex; align-items: center; gap: 8px; width: 100%; height: 34px; padding: 0 10px; margin-bottom: 6px;
+                  border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-card); font-size: var(--text-ui-xs); }
+.chooser button:hover { border-color: var(--color-border-hover); background: var(--color-surface-hover); }
+.chooser .ic { color: var(--color-foreground-subtlest); }

@@ -1,0 +1,54 @@
+/* ==========================================================================
+   web/src/features/auth/login.css — 登录/欢迎页（三状态占位）页面级样式
+   来源：design/prototype/login.html（<style> 页面级类原样迁移，类名一致）。
+   B7 批（2026-10-24）落位；LCode P2 前不实现鉴权，本页纯静态占位。
+
+   未迁移清单（逐条注明）：
+   - body 布局（min-height 100vh / flex 居中 / padding 24px）：React 侧改为
+     页面根 Tailwind 等价类（flex min-h-screen items-center justify-center
+     p-6），避免污染全局 body；
+   - .demo / .demo .chips（原型评审注释件「占位说明」及演示切换 chips，
+     B0 口径评审件不迁；三状态切换经入口/表单按钮以 React 状态等价实现）。
+
+   状态互斥说明：原型对 .entries（display:flex）挂 hidden 属性会被作者级
+   display 压过 UA 的 [hidden] 规则；Tailwind v4 preflight 的
+   [hidden] { display: none !important } 使 React 侧 hidden 语义正确，
+   故按原型保留 hidden 切换写法，不另造条件渲染。
+
+   亮（:root）暗（.dark）双主题逐处核对：全部取值走 var(--*) 语义 token。
+   ========================================================================== */
+
+.stage { width: 100%; max-width: 380px; }
+.brand { display: flex; flex-direction: column; align-items: center; gap: 12px; margin-bottom: 22px; text-align: center; }
+.logo { width: 44px; height: 44px; border-radius: var(--radius-lg); background: var(--color-primary); color: var(--color-primary-foreground);
+        display: flex; align-items: center; justify-content: center; font-family: var(--font-mono); font-weight: 700; font-size: 22px; }
+.brand h1 { font-size: 22px; letter-spacing: -.01em; }
+.brand p { font-size: var(--text-ui-sm); color: var(--color-foreground-subtle); }
+.entries { display: flex; flex-direction: column; gap: 10px; }
+.entry { display: flex; align-items: center; gap: 12px; width: 100%; padding: 13px 14px;
+         border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-card); text-align: left;
+         transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease); }
+.entry:hover { border-color: var(--color-border-hover); background: var(--color-surface-hover); }
+.entry .ic { width: 17px; height: 17px; color: var(--color-foreground-subtle); }
+.entry .t { display: flex; flex-direction: column; gap: 1px; flex: 1; }
+.entry .t b { font-weight: 500; color: var(--color-foreground-strong); font-size: var(--text-ui-sm); }
+.entry .t span { font-size: var(--text-ui-2xs); color: var(--color-foreground-subtlest); font-family: var(--font-mono); }
+.card { border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-card); padding: 18px; }
+.card h2 { font-size: var(--text-ui-lg); margin-bottom: 14px; }
+.field { margin-bottom: 12px; }
+.field label { display: block; font-size: var(--text-ui-xs); color: var(--color-foreground-subtle); margin-bottom: 5px; }
+.field .ctl { display: flex; align-items: center; height: 34px; padding: 0 10px; border: 1px solid var(--color-border);
+              border-radius: var(--radius-md); background: var(--color-input); font-size: var(--text-ui-sm); gap: 8px; }
+.field .ctl:focus-within { border-color: var(--color-accent-border); box-shadow: var(--focus-ring); }
+.field input, .field select { flex: 1; background: none; border: 0; outline: none; min-width: 0; }
+.field .hint { margin-top: 5px; font-size: var(--text-ui-2xs); color: var(--color-foreground-subtlest); }
+.row { display: flex; gap: 8px; margin-top: 16px; }
+.row .btn { flex: 1; height: 34px; }
+.skip { margin-top: 12px; text-align: center; }
+.skip button { font-size: var(--text-ui-xs); color: var(--color-foreground-subtle); padding: 8px 10px; border-radius: var(--radius-sm); }
+.skip button:hover { background: var(--color-surface-hover); color: var(--color-foreground); }
+.wait { text-align: center; padding: 10px 0 4px; }
+.wait .pulse-ring { width: 44px; height: 44px; margin: 0 auto 14px; border-radius: 50%; border: 2px solid var(--color-accent-border);
+                    border-top-color: var(--color-brand); animation: ic-spin 1.1s linear infinite; }
+.wait p { font-size: var(--text-ui-sm); color: var(--color-foreground); margin-bottom: 4px; }
+.wait .hint { font-size: var(--text-ui-2xs); color: var(--color-foreground-subtlest); font-family: var(--font-mono); margin-bottom: 16px; }

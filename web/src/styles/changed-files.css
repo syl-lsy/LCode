@@ -1,0 +1,83 @@
+/* ==========================================================================
+   web/src/styles/changed-files.css — 改动文件卡 + 审查面板 + 文件预览 页级样式
+   来源：design/prototype/changed-files.html（<style> 页面级类原样迁移，类名一致）。
+
+   放置说明：本页类同时被两个 feature 消费——chat（消息流内改动文件卡 .files-card/
+   .fc-* 族，DiffCard.tsx）与 workbench（审查面板行 .rv-* 与 .git-mark、文件头
+   .file-head、文件预览 .crumb 与 .v-body）——单页类不满足「按 feature 就地放」
+   前提，故落 styles/ 单文件（App.tsx 全局引入；tailwind.css 本批锁死不再动）。
+
+   未迁移清单（本批裁决，逐条注明）：
+   - .chip-btn（与 task-conversation.html 同款消息操作 chip 钮，task-conversation.css
+     已覆盖，B2 定稿口径）
+   - .viewer/.v-tabs/.v-tab（原型把标签条画在查看器内部；产品的右栏标签条由
+     PanelTabs 统一承担（R10 同一条标签条），文件预览只做内容区 = .crumb + .v-body）
+   - .diff/.dl 行结构（行内容体沿用 DiffText 双列行号渲染——信息量是原型单列
+     行号的超集；样式 token（diff-added/-removed/-hunk 族）一致，不重复迁移）
+   - .md 的 p/h2/pre/code 基础排版（Markdown 组件 + markdown.css 已覆盖同语义），
+     仅迁移 v-body 内 h1 与列表间距这两条 markdown.css 未覆盖的口径
+   - .grid/.cap/.head/.wrap（原型页演示栅格与 demo 标注，评审件非产品 UI）
+
+   亮（:root）暗（.dark）双主题逐处核对：全部取值走 var(--*) 语义 token。
+   ========================================================================== */
+
+/* ---------- 消息流内改动文件卡（DiffCard） ---------- */
+.files-card {
+  border: 1px solid var(--color-border); border-radius: var(--radius-lg);
+  background: var(--color-card); overflow: hidden;
+}
+.fc-row { display: flex; align-items: center; gap: 10px; padding: 10px 13px; }
+.fc-row + .fc-row { border-top: 1px solid var(--color-border); }
+.fc-name { font-family: var(--font-mono); font-size: var(--text-ui-sm); color: var(--color-foreground-strong); }
+.fc-row .grow { flex: 1; }
+.fc-exp {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  font-size: var(--text-ui-xs); color: var(--color-foreground-subtle); cursor: pointer;
+}
+.fc-exp:hover { background: var(--color-surface-hover); }
+.fc-exp .chev { transition: transform var(--dur) var(--ease); display: inline-flex; }
+.fc-exp.open .chev { transform: rotate(180deg); }
+
+/* ---------- F15/R3§F 审查面板行：Git 状态图标 + 文件名 + 路径 + 徽标 + chevron ---------- */
+.rv-row {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  padding: 8px 12px; font-size: var(--text-ui-xs); color: var(--color-foreground);
+}
+.rv-row:hover { background: var(--color-surface-hover); }
+.rv-row + .rv-row, .rv-row + .rv-diff { border-top: 1px solid var(--color-border); }
+.rv-row .fn { font-family: var(--font-mono); font-size: var(--text-ui-sm); color: var(--color-foreground-strong); }
+.rv-row .pth { font-family: var(--font-mono); font-size: var(--text-ui-2xs); color: var(--color-foreground-subtlest); }
+.rv-row .grow { flex: 1; }
+.rv-row .chev { color: var(--color-foreground-subtlest); flex: none; display: inline-flex; }
+/* Git 状态色方块字母（--color-git-* 族；untracked 同型，契约 change 枚举暂无该值） */
+.git-mark {
+  font-family: var(--font-mono); font-size: var(--text-ui-2xs); line-height: 1;
+  width: 16px; height: 16px; flex: none;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid currentColor; border-radius: var(--radius-xs);
+}
+.rv-diff { background: var(--color-surface); }
+
+/* ---------- 展开后的 diff 视图（消息流卡内 / 审查行内共用容器） ---------- */
+.diff-view { border-top: 1px solid var(--color-border); }
+.file-sec + .file-sec { border-top: 1px solid var(--color-border); }
+.file-head {
+  display: flex; align-items: center; gap: 8px; padding: 7px 12px;
+  background: var(--color-surface); font-family: var(--font-mono);
+  font-size: var(--text-ui-xs); color: var(--color-foreground);
+}
+.file-head .grow { flex: 1; }
+
+/* ---------- 右栏文件预览标签（只读占位）：面包屑 + 正文 ---------- */
+.crumb {
+  display: flex; align-items: center; gap: 6px; padding: 9px 12px;
+  border-bottom: 1px solid var(--color-border); flex: none;
+}
+.crumb .c { font-family: var(--font-mono); font-size: var(--text-ui-xs); color: var(--color-foreground-subtle); }
+.crumb .sep { color: var(--color-foreground-subtlest); font-size: 10px; }
+.crumb .cur { color: var(--color-foreground-strong); }
+.crumb .grow { flex: 1; }
+.v-body { flex: 1; overflow-y: auto; padding: 16px 18px; }
+/* markdown.css（.md-body）未覆盖的两条本页口径，随 .md 作用域迁移 */
+.v-body.md h1 { font-size: 20px; margin-bottom: 8px; }
+.v-body.md > *:first-child { margin-top: 0; }

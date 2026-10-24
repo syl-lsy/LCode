@@ -22,12 +22,30 @@ export interface WorkbenchTab {
   readonly title: string;
 }
 
+/**
+ * 任务名标签（F25/RD#45：会话首标签，tablist 首位、不进选择器、无 × 关闭）。
+ * 展示层伪标签：不入 tabs 集合（无关闭语义），激活态经 setActiveTab(TASK_TAB_ID)
+ * 表达；WorkbenchPanel 据此分发 TaskSummaryPane。
+ */
+export const TASK_TAB_ID = 'task:current';
+
+/** 终端 dock 三态（F2 态 A，修订 RD#15）：hidden（全收）↔ bar（dock 条）↔ panel（~200px 展开区）。 */
+export type TerminalDockState = 'hidden' | 'bar' | 'panel';
+
 export interface WorkbenchStore {
   tabs: WorkbenchTab[];
   activeTabId: string | null;
   /** 面板宽度（220-480px，R10；localStorage 持久化归 M2 任务 2） */
   width: number;
   collapsed: boolean;
+  /**
+   * 终端 dock 三态（F2 态 A；UI 状态扩展，会话视图布局细节、不持久化）：
+   * 头部「切换终端」钮 / rail「切换终端」钮 / Ctrl+J 共用 toggleTerminalDock
+   * （hidden ↔ bar；panel 态下再按 = 全收，对齐原型 dock.hidden 判定口径）。
+   */
+  terminalDock: TerminalDockState;
+  setTerminalDock: (state: TerminalDockState) => void;
+  toggleTerminalDock: () => void;
   openTab: (tab: { kind: TabKind; id: string; title: string }) => void;
   /**
    * diff_ready 自动开审查标签（M3）：新开 = 追加 + 激活 + 展开面板；已存在同 id
@@ -101,6 +119,7 @@ interface WorkbenchData {
   activeTabId: string | null;
   width: number;
   collapsed: boolean;
+  terminalDock: TerminalDockState;
 }
 
 function createWorkbenchSlice(): WorkbenchData {
@@ -113,11 +132,15 @@ function createWorkbenchSlice(): WorkbenchData {
   } catch {
     // 无 localStorage（SSR/Node 测试环境）：默认值
   }
-  return { tabs: [], activeTabId: null, width, collapsed };
+  // terminalDock 默认 bar（dock 条）：保持 M2 以来「会话视图底部可见 dock 条」行为
+  return { tabs: [], activeTabId: null, width, collapsed, terminalDock: 'bar' };
 }
 
 export const useWorkbenchStore = create<WorkbenchStore>((set) => ({
   ...createWorkbenchSlice(),
+  setTerminalDock: (terminalDock) => set({ terminalDock }),
+  toggleTerminalDock: () =>
+    set((s) => ({ terminalDock: s.terminalDock === 'hidden' ? 'bar' : 'hidden' })),
   openTab: ({ kind, id, title }) =>
     set((s) => {
       const tabId = tabIdOf(kind, id);

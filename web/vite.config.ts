@@ -20,7 +20,7 @@ export default defineConfig({
     dedupe: ['react', 'react-dom', 'zod'],
   },
   server: {
-    port: 8080,
+    port: 8081,
     // A4 §7.4：dev 同源代理，与生产（反代同源）零差异，免 CORS
     proxy: {
       '/api': 'http://127.0.0.1:8000',

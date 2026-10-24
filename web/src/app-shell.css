@@ -1,0 +1,83 @@
+/* ==========================================================================
+   web/src/app-shell.css — 壳层与首页空态页面级样式
+   来源：design/prototype/app-shell.html（<style> 页面级类原样迁移，类名一致；
+   跨页共享类已在 web/src/styles/components.css，不在此重复）。
+   未迁移（原型评审注释件，非产品 UI）：.note / .note-float；
+   未迁移（无对应实现，留后续批次）：.side-tree/.region 族/.proj-row/.empty-hint
+   （侧栏项目树分区，LCode 暂无项目模型）、body.side-collapsed/.panel 族
+   （右面板走 workbench 组件）、.bash-row/.t-* 终端族（terminal 批次）。
+   已清理（B0 遗留重复定义）：.chooser 与 side-panels.css 重复且取值冲突，
+   以 side-panels.css 全量定义（原型口径 top:46px 相对面板头条）为唯一定义，
+   本文件不再承担（避免靠 import 顺序碰巧胜出的级联地雷）。
+   ========================================================================== */
+
+/* ---------- 侧边栏顶部区（新建任务/搜索/导航/视图切换/工具条容器） ---------- */
+.side-top { padding: 10px 10px 6px; display: flex; flex-direction: column; gap: 2px; }
+.side-item {
+  display: flex; align-items: center; gap: 9px; height: 30px; padding: 0 10px;
+  border-radius: var(--radius-sm); font-size: var(--text-ui-sm); color: var(--color-foreground);
+  width: 100%; text-align: left;
+}
+.side-item:hover { background: var(--color-surface-hover); }
+.side-item .kbd { margin-left: auto; }
+.tool-row { display: flex; gap: 2px; padding: 2px 4px 6px; }
+.tool-row[hidden] { display: none; }
+.tool-row .icon-btn { width: 26px; height: 26px; }
+
+/* ---------- 侧边栏底部（账号 + 底部导航项） ---------- */
+.side-bottom { border-top: 1px solid var(--color-border); padding: 8px 10px 42px; display: flex; flex-direction: column; gap: 1px; }
+.account { display: flex; align-items: center; gap: 9px; height: 34px; padding: 0 8px; border-radius: var(--radius-sm); width: 100%; }
+.account:hover { background: var(--color-surface-hover); }
+.avatar { width: 22px; height: 22px; border-radius: 50%; flex: none; background: var(--color-accent); border: 1px solid var(--color-accent-border);
+          color: var(--color-accent-foreground); font-size: 10px; display: flex; align-items: center; justify-content: center; font-weight: 600; }
+.account .nm { font-size: var(--text-ui-sm); color: var(--color-foreground-strong); }
+
+/* ---------- 主区 ---------- */
+.main { flex: 1; min-width: 0; display: flex; flex-direction: column; position: relative; }
+/* F29：背景 L 字母水印（对应官方 Z 水印，R3§A）——低透明度大字、居中、不挡交互 */
+.wm { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+      pointer-events: none; user-select: none; z-index: 0;
+      font-weight: 800; font-size: min(48vh, 48vw); line-height: 1; letter-spacing: -.05em;
+      color: var(--color-foreground); opacity: .04; }
+.rail { position: absolute; top: 46px; right: 10px; display: flex; flex-direction: column; gap: 2px; z-index: 20; }
+.rail .icon-btn { width: 32px; height: 32px; border: 1px solid var(--color-border); background: var(--color-card); border-radius: var(--radius-md); }
+.rail .icon-btn:hover { background: var(--color-surface-hover); }
+.main-center { flex: 1; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 24px; overflow-y: auto; position: relative; z-index: 1; }
+.col { width: 100%; max-width: 720px; display: flex; flex-direction: column; }
+.greet { font-size: var(--text-ui-xl); font-weight: 600; color: var(--color-foreground-strong); letter-spacing: -.01em; margin-bottom: 14px; }
+.proj-sel { display: flex; align-items: center; gap: 6px; margin-bottom: 14px; }
+.proj-chip {
+  display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 10px;
+  border: 1px solid var(--color-border); border-radius: 999px; background: var(--color-card);
+  font-size: var(--text-ui-xs); color: var(--color-foreground);
+}
+.proj-chip:hover { border-color: var(--color-border-hover); background: var(--color-surface-hover); }
+.proj-chip .chev { color: var(--color-foreground-subtlest); }
+.composer-wrap { position: relative; }
+/* C-06 成本提醒胶囊（F22/R3§A）：悬浮工具条上方、× 可关；P2 计费前为演示件 */
+.quota-tip { position: absolute; top: -13px; right: 14px; z-index: 6; display: inline-flex; align-items: center; gap: 7px; height: 26px; padding: 0 5px 0 10px;
+             border: 1px solid var(--color-accent-border); border-radius: 999px; background: var(--color-popover); box-shadow: var(--shadow-sm);
+             font-size: var(--text-ui-2xs); color: var(--color-accent-foreground); }
+.quota-tip .qt-x { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; color: var(--color-foreground-subtlest); flex: none; }
+.quota-tip .qt-x:hover { background: color-mix(in oklab, var(--color-brand) 25%, transparent); color: var(--color-foreground-strong); }
+/* F22 剩余额度环形钮：工具条内图标钮（悬停出浮层，点击无浮层为官方行为） */
+.quota-ring { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0; border-radius: var(--radius-sm); flex: none; }
+.quota-ring:hover { background: var(--color-surface-hover); }
+.bar-spacer { flex: 1; }
+.quick { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 18px; }
+.quick button {
+  display: flex; align-items: center; gap: 8px; padding: 11px 12px;
+  border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-card);
+  font-size: var(--text-ui-sm); color: var(--color-foreground); text-align: left;
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+.quick button:hover { border-color: var(--color-border-hover); background: var(--color-surface-hover); }
+.quick .qic { color: var(--color-foreground-subtlest); }
+.hint-line { margin-top: 14px; text-align: center; font-size: var(--text-ui-2xs); color: var(--color-foreground-subtlest); }
+
+/* 左下角：切换侧边栏（logo） */
+.side-switch { position: fixed; left: 12px; bottom: 12px; z-index: 40; display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px;
+               border: 1px solid var(--color-border); border-radius: var(--radius-md); background: color-mix(in oklab, var(--color-card) 85%, transparent); backdrop-filter: blur(6px); }
+.side-switch .mark { width: 18px; height: 18px; border-radius: 5px; background: var(--color-primary); color: var(--color-primary-foreground);
+                     font-family: var(--font-mono); font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+.side-switch:hover { border-color: var(--color-border-hover); }

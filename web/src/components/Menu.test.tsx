@@ -60,17 +60,59 @@ describe('Menu · 开关与键盘', () => {
     expect(screen.getByTestId('menu-popover')).toBeInTheDocument();
   });
 
-  it('selected 项带 aria-checked；hint 渲染在右侧', async () => {
+  it('selected 项带 aria-checked；desc 行内说明与 trailing 右侧插槽渲染', async () => {
     const user = userEvent.setup();
     render(
       <Menu
         trigger="打开"
-        items={[{ key: 'x', label: '当前', selected: true, hint: <span>⌘1</span>, onSelect: vi.fn() }]}
+        items={[
+          {
+            key: 'x',
+            label: <span className="nm">当前</span>,
+            desc: <span className="ds">说明文案</span>,
+            trailing: <span>⌘1</span>,
+            selected: true,
+            onSelect: vi.fn(),
+          },
+        ]}
       />,
     );
     await user.click(screen.getByRole('button', { name: '打开' }));
     expect(screen.getByTestId('menu-item-x')).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByTestId('menu-item-x')).toHaveTextContent('说明文案');
     expect(screen.getByTestId('menu-item-x')).toHaveTextContent('⌘1');
+  });
+
+  it('结构项：separator/header/static/foot 与 checkFirst 选中勾前置（toolbar-menus 结构一比一）', async () => {
+    const user = userEvent.setup();
+    render(
+      <Menu
+        trigger="打开"
+        items={[
+          { key: 'hdr', kind: 'header', label: '分组头' },
+          { key: 'sel', label: <span className="nm mono">选中项</span>, checkFirst: true, selected: true },
+          { key: 'row', kind: 'static', itemClassName: 'searching', label: '静态行' },
+          { key: 'sep', kind: 'separator' },
+          { key: 'foot', kind: 'foot', label: <div className="hint">底部提示</div> },
+        ]}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: '打开' }));
+    expect(screen.getByTestId('menu-item-hdr')).toHaveClass('hdr');
+    expect(screen.getByTestId('menu-item-sel')).toHaveClass('mi', 'sel');
+    expect(screen.getByTestId('menu-item-sel').firstChild).toHaveClass('ck'); // 勾为首子节点
+    expect(screen.getByTestId('menu-item-row')).toHaveClass('searching');
+    expect(screen.getByTestId('menu-item-sep')).toHaveClass('sep');
+    expect(screen.getByTestId('menu-item-foot')).toHaveClass('menu-foot');
+  });
+
+  it('direction=up 弹出层带向上定位类；menuMaxWidth 生效', async () => {
+    const user = userEvent.setup();
+    render(<Menu trigger="打开" direction="up" menuMaxWidth={180} items={makeItems()} />);
+    await user.click(screen.getByRole('button', { name: '打开' }));
+    const popover = screen.getByTestId('menu-popover');
+    expect(popover.className).toContain('bottom-');
+    expect(popover).toHaveStyle({ maxWidth: '180px' });
   });
 
   it('Escape 与外部点击关闭', async () => {

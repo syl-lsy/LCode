@@ -62,6 +62,24 @@ describe('workbenchStore：标签与面板（唯一可跨 feature 调 action 的
     expect(useWorkbenchStore.getState().collapsed).toBe(true);
   });
 
+  it('terminalDock 三态（F2 态 A）：toggle 在 hidden ↔ bar 往返；panel 态再按 = 全收', () => {
+    // 默认 dock 条（保持 M2 以来会话视图底部可见行为）
+    expect(useWorkbenchStore.getState().terminalDock).toBe('bar');
+
+    useWorkbenchStore.getState().setTerminalDock('panel');
+    expect(useWorkbenchStore.getState().terminalDock).toBe('panel');
+    // panel 态下再按（原型 dock.hidden 判定口径）= 全收
+    useWorkbenchStore.getState().toggleTerminalDock();
+    expect(useWorkbenchStore.getState().terminalDock).toBe('hidden');
+    // 再按 → 回 dock 条
+    useWorkbenchStore.getState().toggleTerminalDock();
+    expect(useWorkbenchStore.getState().terminalDock).toBe('bar');
+    // reset 回默认 bar
+    useWorkbenchStore.getState().setTerminalDock('hidden');
+    useWorkbenchStore.getState().reset();
+    expect(useWorkbenchStore.getState().terminalDock).toBe('bar');
+  });
+
   it('setWidth 夹取到 [220, 480]', () => {
     expect(PANEL_WIDTH_MIN).toBe(220);
     expect(PANEL_WIDTH_MAX).toBe(480);

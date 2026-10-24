@@ -6,7 +6,7 @@
  * - 运行中 = 停止生成（幂等 POST /runs/{id}/stop），已收内容不被清空；
  * - 等待审批期间发送禁用（审批唯一闸门，R9）。
  */
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -194,5 +194,57 @@ describe('Composer · 发送与停止（AC-001-1/2/4）', () => {
     await waitFor(() => {
       expect(onSendWithoutSession).toHaveBeenCalledWith('新任务');
     });
+  });
+});
+
+describe('Composer · 输入区菜单族与快捷卡注入（B1/B5 原型还原）', () => {
+  it('添加上下文（@）与命令（/）静态演示菜单：三段结构齐备，条目置灰不发请求', async () => {
+    const user = userEvent.setup();
+    requestLog.length = 0;
+    render(<Composer sessionId={SESSION} />);
+
+    // @ 菜单（toolbar-menus 菜单 4）：添加 / 插件 / 文件 三段 + 底部提示
+    await user.click(screen.getByTestId('composer-context'));
+    const ctxMenu = screen.getByTestId('menu-popover');
+    expect(within(ctxMenu).getByText('添加')).toBeInTheDocument();
+    expect(within(ctxMenu).getByTestId('menu-item-attachment')).toBeDisabled();
+    expect(within(ctxMenu).getByText('$fetch-url')).toBeInTheDocument();
+    expect(within(ctxMenu).getByText('$sandbox-files')).toBeInTheDocument();
+    expect(within(ctxMenu).getByText('输入内容以搜索插件、文件和对话')).toBeInTheDocument();
+    await user.keyboard('{Escape}');
+
+    // / 菜单（toolbar-menus 菜单 5）：命令 / 技能 / 子智能体 三段
+    await user.click(screen.getByTestId('composer-slash'));
+    const slashMenu = screen.getByTestId('menu-popover');
+    expect(within(slashMenu).getByText('/goal')).toBeInTheDocument();
+    expect(within(slashMenu).getByText('/plan')).toBeInTheDocument();
+    expect(within(slashMenu).getByText('$commit-msg')).toBeInTheDocument();
+    expect(within(slashMenu).getByText('general-purpose')).toBeInTheDocument();
+    expect(within(slashMenu).getByText('Tools: 只读 7 工具 · 免审批')).toBeInTheDocument();
+    expect(within(slashMenu).getByText('输入内容以搜索命令、技能或子智能体')).toBeInTheDocument();
+    // 静态演示条目全部置灰：点击不触发任何请求
+    expect(within(slashMenu).getByTestId('menu-item-cmd-goal')).toBeDisabled();
+    expect(requestLog.filter((entry) => entry.url.includes('/messages'))).toHaveLength(0);
+  });
+
+  it('prefill 注入：空输入直接填入并聚焦；非空输入换行追加', async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(<Composer sessionId={SESSION} prefill={{ text: '周报总结', id: 1 }} />);
+    expect(screen.getByTestId('composer-input')).toHaveValue('周报总结');
+    expect(screen.getByTestId('composer-input')).toHaveFocus();
+
+    // 同 id 不重复注入
+    rerender(<Composer sessionId={SESSION} prefill={{ text: '周报总结', id: 1 }} />);
+    expect(screen.getByTestId('composer-input')).toHaveValue('周报总结');
+
+    // 输入后再次注入（新 id）→ 换行追加
+    await user.type(screen.getByTestId('composer-input'), '（补充说明）');
+    rerender(<Composer sessionId={SESSION} prefill={{ text: '报错修复', id: 2 }} />);
+    expect(screen.getByTestId('composer-input')).toHaveValue('周报总结（补充说明）\n报错修复');
+  });
+
+  it('mode 插槽渲染在工具条内（ApprovalModeMenu composer 变体的挂载点）', () => {
+    render(<Composer sessionId={SESSION} mode={<button type="button">切换模式：手动</button>} />);
+    expect(screen.getByText('切换模式：手动')).toBeInTheDocument();
   });
 });

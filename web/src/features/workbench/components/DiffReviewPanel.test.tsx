@@ -7,7 +7,7 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http } from 'msw';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   makeDiffFile,
@@ -68,15 +68,23 @@ beforeEach(() => {
 });
 
 describe('DiffReviewPanel · pending 渲染', () => {
-  it('摘要条 + 文件列表 + 裁决区（接受/驳回 + 空意见提示）', async () => {
+  it('摘要条 + 文件行 + 裁决区（接受/驳回 + 空意见提示）；行默认收起、点开懒加载 diff', async () => {
+    const user = userEvent.setup();
     seedPending();
     renderPanel();
 
     expect(await screen.findByTestId('diff-summary-bar')).toBeInTheDocument();
     expect(screen.getByTestId('diff-summary-round')).toHaveTextContent('第 1 轮');
+    // .rv-row 行结构：Git 状态字母（modified=M）+ 文件名 + 路径段 + +N -N 徽标 + 复制钮
     const items = screen.getAllByTestId('diff-file-item');
     expect(items).toHaveLength(1);
-    expect(items[0]).toHaveTextContent('app.py');
+    const row = items[0]!;
+    expect(row).toHaveTextContent('app.py');
+    expect(row).toHaveAttribute('data-expanded', 'false');
+    expect(within(row).getByText('M')).toBeInTheDocument();
+    expect(within(row).getByText('+5')).toBeInTheDocument();
+    expect(within(row).getByText('-2')).toBeInTheDocument();
+    expect(within(row).getByTestId('diff-file-copy')).toBeInTheDocument();
 
     expect(screen.getByTestId('diff-verdict-form')).toBeInTheDocument();
     expect(screen.getByTestId('diff-verdict-accept')).toHaveTextContent('接受');
@@ -84,7 +92,10 @@ describe('DiffReviewPanel · pending 渲染', () => {
     expect(screen.getByTestId('diff-verdict-empty-hint')).toHaveTextContent(
       '不填意见将不会自动返工',
     );
-    // 选中首个文件 → 详情懒加载渲染
+    // 行默认收起：无行内 diff；点击展开 → 懒加载渲染
+    expect(screen.queryByTestId('diff-file-inline')).not.toBeInTheDocument();
+    await user.click(row);
+    expect(row).toHaveAttribute('data-expanded', 'true');
     expect((await screen.findAllByTestId('diff-line')).length).toBeGreaterThan(0);
   });
 
@@ -253,19 +264,40 @@ describe('DiffReviewPanel · 刷新恢复与空态', () => {
     });
   });
 
-  it('审查不存在（404）→ 错误空态；修复后可重试', async () => {
+  it('审查不存在（404）→ 无审查空态（B6，empty-states #1 文案照抄 + frame 头部）；补齐数据后刷新可恢复', async () => {
     const user = userEvent.setup();
     renderPanel();
 
-    const empty = await screen.findByTestId('empty-state');
-    expect(empty.textContent).toContain('DIFF_REVIEW_NOT_FOUND');
-    expect(screen.getByTestId('diff-review-retry')).toBeInTheDocument();
+    const empty = await screen.findByTestId('diff-review-empty');
+    expect(empty.textContent).toContain('当前 workspace 不在 Git 仓库中');
+    expect(empty.textContent).toContain('打开一个 Git 仓库目录后，这里会展示当前 workspace 作用域内的改动。');
+    // frame 变体头部：未暂存 badge + git 状态过滤 + 刷新钮
+    expect(empty.querySelector('.frame-head')).not.toBeNull();
+    expect(empty.textContent).toContain('未暂存');
+    expect(empty.textContent).toContain('git 状态过滤');
+    expect(screen.getByTestId('diff-review-empty-refresh')).toBeInTheDocument();
 
     setDiffReviewsFixture([makeDiffReview({ id: REVIEW_ID, session_id: SESSION })]);
     setDiffFilesFixture(REVIEW_ID, [makeDiffFile({ path: 'app.py', patch: PATCH })]);
-    await user.click(screen.getByTestId('diff-review-retry'));
+    await user.click(screen.getByTestId('diff-review-empty-refresh'));
 
     await waitFor(() => expect(screen.getByTestId('diff-summary-bar')).toBeInTheDocument());
+  });
+
+  it('其余错误（非 404）仍走错误空态：文案含错误码与重试钮（B6 行为分支保留）', async () => {
+    server.use(
+      http.get('*/api/v1/diff-reviews/:id', () =>
+        new Response(JSON.stringify({ code: 'INTERNAL_ERROR', message: 'boom' }), {
+          status: 500,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    );
+    renderPanel();
+
+    const empty = await screen.findByTestId('empty-state');
+    expect(empty.textContent).toContain('INTERNAL_ERROR');
+    expect(screen.getByTestId('diff-review-retry')).toBeInTheDocument();
   });
 
   it('跨会话审查不串台：store 里的 review 属其它会话 → 空态提示，不渲染内容', () => {
@@ -289,8 +321,8 @@ describe('DiffReviewPanel · 刷新恢复与空态', () => {
   });
 });
 
-describe('DiffReviewPanel · 文件列表交互', () => {
-  it('点选其它文件：激活态跟随并渲染该文件详情', async () => {
+describe('DiffReviewPanel · 文件行交互（行内展开 + 复制路径）', () => {
+  it('点选其它行：该行行内展开自身 diff（懒加载），已展开行互不影响', async () => {
     const user = userEvent.setup();
     seedPending();
     useDiffStore.getState().upsertFromRest(
@@ -317,18 +349,45 @@ describe('DiffReviewPanel · 文件列表交互', () => {
 
     const items = await screen.findAllByTestId('diff-file-item');
     expect(items).toHaveLength(2);
-    expect(items[0]).toHaveAttribute('data-active', 'true'); // 默认选中首个文件
+    // 默认全部收起（行内展开模型）
+    for (const item of items) expect(item).toHaveAttribute('data-expanded', 'false');
 
     await user.click(items[1]!);
-    await waitFor(() => {
-      const active = screen.getAllByTestId('diff-file-item').find(
-        (el) => el.getAttribute('data-active') === 'true',
-      );
-      expect(active).toHaveTextContent('new.ts');
-    });
-    // 选中文件详情头部展示对应路径与新增徽标
-    const header = await screen.findByTestId('diff-file-header');
+    // 第二行展开自己的行内 diff（.rv-diff），文件头展示对应路径与 Git 状态字母
+    const inline = await screen.findByTestId('diff-file-inline');
+    const header = within(inline).getByTestId('diff-file-header');
     expect(header.textContent).toContain('new.ts');
-    expect(within(header).getByText('新增')).toBeInTheDocument();
+    expect(within(header).getByText('A')).toBeInTheDocument();
+    expect(within(inline).getAllByTestId('diff-line').length).toBeGreaterThan(0);
+    // 第一行仍收起
+    expect(items[0]).toHaveAttribute('data-expanded', 'false');
+  });
+
+  it('复制路径：写入剪贴板并反馈「已复制」，不触发行展开', async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.spyOn(navigator, 'clipboard', 'get').mockReturnValue({ writeText } as unknown as Clipboard);
+    seedPending();
+    renderPanel();
+
+    const row = (await screen.findAllByTestId('diff-file-item'))[0]!;
+    await user.click(within(row).getByTestId('diff-file-copy'));
+    expect(writeText).toHaveBeenCalledWith('app.py');
+    await waitFor(() => expect(within(row).getByTestId('diff-file-copy')).toHaveTextContent('已复制'));
+    expect(row).toHaveAttribute('data-expanded', 'false');
+    expect(screen.queryByTestId('diff-file-inline')).not.toBeInTheDocument();
+  });
+
+  it('键盘可达：行聚焦后 Enter/空格展开（role=button）', async () => {
+    const user = userEvent.setup();
+    seedPending();
+    renderPanel();
+
+    const row = (await screen.findAllByTestId('diff-file-item'))[0]!;
+    expect(row).toHaveAttribute('role', 'button');
+    row.focus();
+    await user.keyboard('{Enter}');
+    expect(row).toHaveAttribute('data-expanded', 'true');
+    expect(await screen.findByTestId('diff-file-inline')).toBeInTheDocument();
   });
 });

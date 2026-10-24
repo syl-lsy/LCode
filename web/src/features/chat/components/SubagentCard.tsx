@@ -104,13 +104,15 @@ export function SubagentCard({
           ⤷
         </span>
         <span className="flex-none text-foreground-subtle">子智能体</span>
-        <span className="badge flex-none border-border-hover text-foreground">{role}</span>
+        {/* .sa-name（task-conversation.css）：role 徽标 = mono 弱底 accent 形（原型 R6） */}
+        <span className="sa-name">{role}</span>
+        {agentId !== null && <span className="dot-sep" aria-hidden="true">·</span>}
         {agentId !== null && (
           <code className="flex-none font-mono text-[length:var(--text-ui-2xs)] text-foreground-subtlest">
             {shortIdOf(agentId)}
           </code>
         )}
-        <span className="ml-auto flex-none text-foreground-subtlest">
+        <span className="open-lb ml-auto">
           {activity?.messageCount ?? 0} 条消息 · {activity?.toolCount ?? 0} 次工具
         </span>
         {running && <span className="spinner flex-none" aria-hidden="true" />}

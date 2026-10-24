@@ -6,6 +6,7 @@ import type { DiffReviewDetail } from '@contracts/rest';
 import { getDiffFile } from '@/api/diffReviews';
 import { ApiError } from '@/api/http';
 import { DiffText } from '@/components/DiffText';
+import { GIT_MARK } from '@/components/DiffGitMark';
 import { Spinner } from '@/components/Spinner';
 
 import { useDiffStore } from '../store';
@@ -13,8 +14,8 @@ import { useDiffStore } from '../store';
 /**
  * DiffFileView（M3 Phase 4）：审查面板的单文件视图。
  *
- * - 头部：change 徽标（added/modified/deleted/renamed）、rename 展示
- *   `old_path → path`、+N/−N、binary 标记；
+ * - 头部：.file-head（changed-files.html）= Git 状态方块字母（GIT_MARK，--color-git-*
+ *   族）+ rename 展示 `old_path → path` + 二进制标记 + +N/−N 徽标；
  * - 主体：复用 DiffText 渲染 `DiffFileDetail.patch` 的解析结果；
  * - **patch 懒加载**：挂载（= 面板选中该文件）才 `getDiffFile`，结果写
  *   `useDiffStore.cachePatch`；已有缓存不再请求（懒加载幂等），abort 跟随卸载；
@@ -29,22 +30,6 @@ import { useDiffStore } from '../store';
 
 /** 单文件摘要（契约 DiffFileSummary，取自 DiffReviewDetail.files 条目）。 */
 export type DiffFileSummaryEntry = DiffReviewDetail['files'][number];
-
-/** change → 中文徽标文案（文件头/列表共用，导出供 DiffReviewPanel 复用）。 */
-export const CHANGE_LABEL: Record<DiffFileSummaryEntry['change'], string> = {
-  added: '新增',
-  modified: '修改',
-  deleted: '删除',
-  renamed: '重命名',
-};
-
-/** change → 徽标 token 类（added 绿 / deleted 红，其余中性）。 */
-export const CHANGE_BADGE: Record<DiffFileSummaryEntry['change'], string> = {
-  added: 'badge badge-add',
-  deleted: 'badge badge-del',
-  modified: 'badge',
-  renamed: 'badge',
-};
 
 /** 文件详情主体（按三种非文本形态分发，见文件头注释）。 */
 function DiffFileBody({ detail }: { detail: DiffFileDetail }) {
@@ -131,24 +116,24 @@ export function DiffFileView({ reviewId, summary }: DiffFileViewProps) {
 
   return (
     <section data-testid="diff-file-view" className="min-w-0">
+      {/* .file-head（changed-files.css，来源 changed-files.html 文件头：Git 状态
+          图标 + 路径 + 徽标） */}
       <header
         data-testid="diff-file-header"
-        className="flex flex-wrap items-center gap-1.5 border-b border-border px-2 py-1.5"
+        className="file-head"
       >
-        <span className={`flex-none ${CHANGE_BADGE[summary.change]}`}>
-          {CHANGE_LABEL[summary.change]}
+        <span className="git-mark flex-none" style={{ color: GIT_MARK[summary.change].color }}>
+          {GIT_MARK[summary.change].letter}
         </span>
         <span
-          className="min-w-0 flex-1 truncate font-mono text-[length:var(--text-ui-xs)] text-foreground"
+          className="min-w-0 flex-1 truncate"
           title={summary.old_path !== null ? `${summary.old_path} → ${summary.path}` : summary.path}
         >
           {summary.old_path !== null ? `${summary.old_path} → ${summary.path}` : summary.path}
         </span>
         {summary.binary && <span className="badge flex-none">二进制</span>}
-        <span className="flex-none font-mono text-[length:var(--text-ui-2xs)]">
-          <span className="text-diff-added">+{summary.additions}</span>
-          <span className="text-diff-removed"> -{summary.deletions}</span>
-        </span>
+        <span className="badge badge-add flex-none">+{summary.additions}</span>
+        <span className="badge badge-del flex-none">-{summary.deletions}</span>
       </header>
       <div className="px-1 py-1">
         {loading && (

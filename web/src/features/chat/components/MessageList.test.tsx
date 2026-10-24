@@ -175,7 +175,7 @@ describe('MessageList · 渲染分发与折叠组', () => {
     expect(screen.getByTestId('todo-progress')).toHaveTextContent('1/2');
   });
 
-  it('审批行终态：pending 提示 + 终态文案；diff 卡点击开右栏审查标签（workbench 编排 action）', async () => {
+  it('审批行终态：pending 提示 + 终态文案；diff 卡「打开」开右栏审查标签（workbench 编排 action）', async () => {
     const user = userEvent.setup();
     useChatStore.getState().appendApprovalItem({
       id: 'ap-1',
@@ -194,10 +194,14 @@ describe('MessageList · 渲染分发与折叠组', () => {
 
     render(<MessageList sessionId={SESSION} />);
     expect(screen.getByTestId('approval-row')).toHaveAttribute('data-status', 'pending');
+    // .files-card 行结构：store 无该 review 时主文件名回退轮次文案；+N/-N 徽标在位
+    expect(screen.getByTestId('diff-card')).toHaveAttribute('data-verdict', 'pending');
     expect(screen.getByTestId('diff-card')).toHaveTextContent('改动文件（第 2 轮）');
     expect(screen.getByTestId('diff-card')).toHaveTextContent('+17');
+    expect(screen.getByTestId('diff-card-expand')).toHaveTextContent('展开已更改文件');
+    expect(screen.getByTestId('diff-card-undo')).toBeDisabled();
 
-    await user.click(screen.getByTestId('diff-card'));
+    await user.click(screen.getByTestId('diff-card-open'));
     expect(useWorkbenchStore.getState().activeTabId).toBe('review:rev-1');
     expect(useWorkbenchStore.getState().collapsed).toBe(false);
   });

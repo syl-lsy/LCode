@@ -1,0 +1,205 @@
+/* ==========================================================================
+   web/src/styles/components.css — 原型跨页共享组件类（单源约定）
+
+   约定：design/prototype/*.html 各页 <style> 中「多页重复定义」的类收敛到此，
+   类名与原型完全一致、原样迁移（不新增/改写原型没有的样式）；
+   单页独有的页面级类按批次放对应 feature 目录（如
+   web/src/features/chat/components/task-conversation.css，头注释标来源页）。
+   tokens.css 锁死零改动；本文件经 tailwind.css @import（tokens.css 之后）全局生效。
+
+   多页定义有微差时以 app-shell.html 为准（B0 定稿口径），逐条标注如下：
+
+   - .shell ← design/prototype/app-shell.html（task-conversation.html 为
+     calc(100vh - 30px) 演示条变体，微差不迁）
+   - .sidebar ← design/prototype/app-shell.html（同定义亦见 task-conversation.html）
+   - .new-task（含 :hover）← design/prototype/app-shell.html
+     （task-conversation.html 为 height 30px / width:100% 变体，微差不迁）
+   - .view-tabs（含 button 与 aria-selected 态）← design/prototype/app-shell.html
+     （同定义亦见 sessions.html）
+   - .composer / .composer-input / .composer-bar（含 :focus-within / :empty::before）
+     ← design/prototype/app-shell.html（同定义亦见 task-conversation.html）
+   - .tool-btn（含 :hover / .mono / .chev）
+     ← design/prototype/app-shell.html（同定义亦见 task-conversation.html /
+       plan-mode.html / side-panels.html，四页重复；app-shell 高度 28px、
+       字号 text-ui-xs 为本批触发器采用口径）
+   - .tb-sep ← design/prototype/app-shell.html（plan-mode.html /
+     task-conversation.html 为 height 12px 变体，微差不迁）
+   - .pill-close（含 :hover / .x）← design/prototype/app-shell.html
+     （同定义亦见 plan-mode.html）
+   - .send（含 :hover）← design/prototype/app-shell.html
+     （同定义亦见 task-conversation.html / side-panels.html）
+   - .drag-sep（含 .on）← design/prototype/app-shell.html（同定义亦见
+     terminal-panel.html；两页定义一致）
+
+   不收敛（页面间结构性不同，留各页批次按其原型落位）：
+   .panel / .panel-head / .strip / .panel-tab / .panel-body / .chooser /
+   .t-body / .t-tab / .t-input / .bash-row / .g / .b / .w / .caret
+   （app-shell 300px 滑出面板与 terminal-panel / side-panels 340px 面板、
+   内联 t-body 与滚动 t-body 非同一组件形态）。
+
+   B4 落位记录（2026-10-24）：上述排除族已按原型页落位——终端族（.dock* /
+   .bash-row / .t-tabs / .t-tab / .sh / .t-body / .t-input / .caret / 调色类）
+   → web/src/features/workbench/terminal/terminal-panel.css；面板骨架与选择器
+   （.p-head / .strip / .panel-tab / .p-body / .chooser / 任务名占位块族）→
+   web/src/features/workbench/components/side-panels.css。app-shell.html 的
+   300px 滑出面板如需同类（.panel/.panel-tab 等）另行裁决，不复用 340px 口径。
+   ========================================================================== */
+
+/* ---------- 壳层根容器（app-shell / task-conversation 共用） ---------- */
+.shell { display: flex; height: 100vh; }
+
+/* ---------- 侧边栏（app-shell / task-conversation 共用） ---------- */
+.sidebar {
+  width: 264px; flex: none; display: flex; flex-direction: column;
+  background: var(--color-sidebar); border-right: 1px solid var(--color-border);
+  transition: margin-left var(--dur-slow) var(--ease);
+}
+
+/* ---------- 侧栏「新建任务」钮（app-shell 口径：32px + margin-bottom） ---------- */
+.new-task {
+  display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px;
+  border: 1px solid var(--color-border); border-radius: var(--radius-md);
+  background: var(--color-card); font-size: var(--text-ui-sm); font-weight: 500;
+  color: var(--color-foreground-strong); margin-bottom: 8px;
+}
+.new-task:hover { border-color: var(--color-border-hover); background: var(--color-surface-hover); }
+
+/* ---------- 侧栏视图切换（分组/项目，F9；app-shell / sessions 共用） ---------- */
+.view-tabs { display: flex; gap: 2px; margin: 10px 4px 2px; padding: 2px; border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-surface); }
+.view-tabs button { flex: 1; height: 24px; border-radius: var(--radius-sm); font-size: var(--text-ui-xs); color: var(--color-foreground-subtle); }
+.view-tabs button[aria-selected="true"] { background: var(--color-card); color: var(--color-foreground-strong); font-weight: 500; border: 1px solid var(--color-border); }
+
+/* ---------- Composer 容器与工具条（app-shell / task-conversation 共用） ---------- */
+.composer { border: 1px solid var(--color-border); border-radius: var(--radius-xl); background: var(--color-card); transition: border-color var(--dur) var(--ease); }
+.composer:focus-within { border-color: var(--color-accent-border); box-shadow: var(--focus-ring); }
+.composer-input { min-height: 74px; padding: 12px 14px 4px; font-size: var(--text-ui-sm); line-height: 1.6; outline: none; overflow-y: auto; }
+.composer-input:empty::before { content: attr(data-placeholder); color: var(--color-foreground-subtlest); pointer-events: none; }
+.composer-bar { display: flex; align-items: center; gap: 4px; padding: 6px 8px 8px; flex-wrap: wrap; }
+
+/* ---------- Composer 工具条旋钮（四页共用） ---------- */
+.tool-btn {
+  display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 9px;
+  border-radius: var(--radius-sm); font-size: var(--text-ui-xs); color: var(--color-foreground-subtle);
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.tool-btn:hover { background: var(--color-surface-hover); color: var(--color-foreground-strong); }
+.tool-btn.mono { font-family: var(--font-mono); font-size: var(--text-ui-2xs); }
+.tool-btn .chev { color: var(--color-foreground-subtlest); }
+
+/* ---------- 工具条内分隔线（app-shell 口径：16px） ---------- */
+.tb-sep { width: 1px; height: 16px; background: var(--color-border); margin: 0 2px; flex: none; }
+
+/* ---------- R11 权限模式激活 pill（app-shell / plan-mode 共用） ---------- */
+.pill-close { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 5px 0 6px;
+              border: 1px solid var(--color-accent-border); border-radius: 999px; background: var(--color-accent);
+              color: var(--color-accent-foreground); font-size: var(--text-ui-2xs); flex: none; }
+.pill-close:hover { border-color: var(--color-border-hover); }
+.pill-close .x { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 50%; }
+.pill-close .x:hover { background: color-mix(in oklab, var(--color-brand) 25%, transparent); color: var(--color-foreground-strong); }
+
+/* ---------- 发送钮（三页共用） ---------- */
+.send {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 30px; height: 30px; border-radius: var(--radius-md);
+  background: var(--color-primary); color: var(--color-primary-foreground);
+}
+.send:hover:not(:disabled) { opacity: .88; }
+
+/* ---------- R10 拖拽分隔条（app-shell / terminal-panel 共用，定义一致） ---------- */
+.drag-sep { width: 5px; flex: none; cursor: col-resize; z-index: 30; }
+.drag-sep:hover, .drag-sep.on { background: var(--color-accent-border); }
+
+/* ==========================================================================
+   B5 落位（2026-10-24）：输入区菜单族 + 额度浮层
+   来源：design/prototype/toolbar-menus.html（8 菜单 + 1 浮层，页面级类原样迁移，
+   类名与原型逐字一致）。八菜单 + 浮层被 models / costs / sessions / chat /
+   壳层多 feature 共同消费，按「跨页共享类放 components.css」约定收敛于此。
+   未迁移（原型演示脚手架，非产品 UI）：.wrap / .head / .grid / .cell / .cap /
+   .trigger（原型演示触发器，产品触发器用 .tool-btn / .proj-chip / .account 等）
+   与页尾 900px 媒体查询；.note 为评审注释件（B0 口径）不迁。
+   ========================================================================== */
+
+.menu { border: 1px solid var(--color-border-hover); border-radius: var(--radius-lg); background: var(--color-popover);
+        box-shadow: var(--shadow-md); overflow: hidden; max-width: 400px; }
+.mi { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; min-height: 34px; padding: 6px 12px;
+      font-size: var(--text-ui-sm); color: var(--color-foreground); }
+.mi:hover:not(:disabled) { background: var(--color-surface-hover); }
+.mi.sel { background: var(--color-accent); color: var(--color-accent-foreground); }
+.mi .nm { flex: none; }
+.mi .ds { font-size: var(--text-ui-2xs); color: var(--color-foreground-subtlest); margin-left: 2px; }
+.mi .ck { margin-left: auto; color: var(--color-brand); }
+.mi .arw { margin-left: auto; color: var(--color-foreground-subtlest); width: 12px; height: 12px; }
+.mi.disabled { color: var(--color-foreground-subtlest); }
+.sep { height: 1px; background: var(--color-border); margin: 4px 0; }
+.menu .hdr { font-size: var(--text-ui-2xs); color: var(--color-foreground-subtlest); padding: 8px 12px 3px; display: flex; align-items: center; gap: 6px; }
+.menu-foot { border-top: 1px solid var(--color-border); padding: 8px 12px; display: flex; flex-direction: column; gap: 5px; }
+.menu-foot .hint { font-size: var(--text-ui-2xs); color: var(--color-foreground-subtlest); display: flex; align-items: center; gap: 7px; }
+.menu-foot .hints { display: flex; gap: 14px; padding-top: 3px; }
+.searching { display: flex; align-items: center; gap: 7px; padding: 6px 12px; font-size: var(--text-ui-xs); color: var(--color-foreground-subtlest); }
+/* R12：斜杠命令说明卡（命令 + 官方描述两行） */
+.mi.cmd { display: block; padding: 7px 12px; }
+.cmd-line { display: block; font-family: var(--font-mono); font-size: var(--text-ui-sm); font-weight: 500; color: var(--color-foreground-strong); }
+.cmd-desc { display: block; font-size: var(--text-ui-2xs); color: var(--color-foreground-subtle); margin-top: 2px; line-height: 1.5; }
+.cmd-desc .tools { display: block; font-family: var(--font-mono); font-size: var(--text-ui-2xs); color: var(--color-foreground-subtlest); margin-top: 2px; }
+/* 子菜单展开对照（账号菜单） */
+.mi.sub-parent { font-weight: 500; }
+.subwrap { padding: 2px 0 4px; }
+.subwrap .mi { padding-left: 36px; min-height: 30px; font-size: var(--text-ui-xs); }
+/* 账号菜单头 */
+.acct { display: flex; align-items: center; gap: 10px; padding: 11px 12px; }
+.acct .av { width: 30px; height: 30px; border-radius: 50%; flex: none; display: flex; align-items: center; justify-content: center;
+            background: var(--color-brand); color: var(--color-primary-foreground); font-weight: 600; font-size: var(--text-ui-sm); }
+.acct .an { font-size: var(--text-ui-sm); font-weight: 600; color: var(--color-foreground-strong); }
+.acct .aid { font-family: var(--font-mono); font-size: var(--text-ui-2xs); color: var(--color-foreground-subtle); }
+.acct:hover { background: var(--color-surface-hover); }
+/* F22 剩余额度浮层 */
+.pill-green { display: inline-flex; align-items: center; gap: 5px; font-size: var(--text-ui-2xs); font-weight: 500; line-height: 1;
+              padding: 4px 9px; border-radius: 999px; color: var(--color-success);
+              background: color-mix(in oklab, var(--color-success) 12%, transparent);
+              border: 1px solid color-mix(in oklab, var(--color-success) 35%, transparent); }
+.qcard { border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 9px 11px; margin-top: 8px; background: var(--color-card); }
+.qcard .qt { display: flex; align-items: baseline; gap: 8px; font-size: var(--text-ui-xs); color: var(--color-foreground); }
+.qcard .qv { margin-left: auto; font-family: var(--font-mono); font-size: var(--text-ui-2xs); color: var(--color-foreground-subtle); }
+.qbar { height: 5px; border-radius: 999px; background: var(--color-quota-track); margin-top: 7px; overflow: hidden; }
+.qbar i { display: block; height: 100%; border-radius: 999px; }
+.qcard .qr { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; font-size: var(--text-ui-2xs); color: var(--color-foreground-subtlest); }
+.ov-head { display: flex; align-items: center; gap: 8px; padding: 11px 12px 4px; }
+.ov-head b { font-size: var(--text-ui-sm); color: var(--color-foreground-strong); }
+.ov-head .more { margin-left: auto; font-size: var(--text-ui-2xs); }
+.ov-body { padding: 2px 12px 12px; }
+/* F23 分支切换 dialog 顶部搜索行（原型为 class="search" 的内联样式，等价落类） */
+.search { display: flex; align-items: center; gap: 7px; padding: 9px 12px; border-bottom: 1px solid var(--color-border); }
+.search input { flex: 1; min-width: 0; background: none; border: 0; outline: none; font-size: var(--text-ui-sm); color: var(--color-foreground); }
+
+/* ==========================================================================
+   B6 落位（2026-10-24）：空态集合（七态）frame 族
+   来源：design/prototype/empty-states.html（<style> 页面级类原样迁移，类名
+   与原型一致）。跨 feature 消费（components/EmptyState、sessions/Sidebar、
+   workbench/CommandPalette），按「跨页共享类放 components.css」约定收敛于此。
+   未迁移（原型演示脚手架，非产品 UI）：.grid / .cell / .cap / .back-index
+   （原型导航钮）；.frame.left（本批无消费场景，接入时随迁）。
+
+   冲突核查：.frame 族（.frame/.frame-head/.frame-body/.empty-ic/.et/.ed/
+   .frame-tools/.tb）与既有类零冲突（.tb-sep 为独立类名；terminal-panel.css
+   头注释提及的 .frame 属原型页演示骨架未迁移）。.hint 未从 task-menus.html
+   再迁——components.css .menu-foot .hint 已定义同值（字号/颜色一致），补全局
+   .hint 供分享勾选模式 sel-bar 使用，取值与原型一致。
+   ========================================================================== */
+
+/* 空态 frame 容器（审查面板 / 侧栏两视图与归档 / 面板内嵌空态的卡片形态） */
+.frame { border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-card); min-height: 170px; display: flex; flex-direction: column; overflow: hidden; }
+.frame-head { display: flex; align-items: center; gap: 6px; padding: 8px 11px; border-bottom: 1px solid var(--color-border); flex: none; }
+.frame-head .t { font-size: var(--text-ui-xs); color: var(--color-foreground-subtle); }
+.frame-body { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 22px 20px; gap: 5px; }
+.empty-ic { width: 34px; height: 34px; border-radius: var(--radius-md); background: var(--color-surface); color: var(--color-foreground-subtlest);
+            display: flex; align-items: center; justify-content: center; margin-bottom: 4px; }
+.et { font-size: var(--text-ui-sm); color: var(--color-foreground-strong); font-weight: 500; }
+.ed { font-size: var(--text-ui-xs); color: var(--color-foreground-subtlest); line-height: 1.6; max-width: 340px; }
+/* 归档模式工具条（F10）：筛选和排序｜归档操作[disabled]｜关闭 */
+.frame-tools { display: flex; align-items: center; gap: 6px; flex: 1; }
+.frame-tools .grow { flex: 1; }
+.tb { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 8px; border-radius: var(--radius-sm);
+      font-size: var(--text-ui-xs); color: var(--color-foreground-subtle); }
+.tb:hover:not(:disabled) { background: var(--color-surface-hover); color: var(--color-foreground); }
+/* 轻提示行（task-menus sel-bar 用；与 .menu-foot .hint 同值） */
+.hint { font-size: var(--text-ui-2xs); color: var(--color-foreground-subtlest); }

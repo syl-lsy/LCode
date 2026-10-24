@@ -80,6 +80,47 @@ describe('parseEditedArgs · edit 参数校验（就地报错不抛异常）', (
   });
 });
 
+describe('DecisionForm · 变体感知选项文案（approval-card.html §8/§9 逐字）', () => {
+  it('Bash 变体（缺省）：第 2 档「始终允许此命令」+ 原型说明；第 1/4 档逐字一致', () => {
+    renderForm();
+    const session = screen.getByTestId('decision-option-approve-session');
+    expect(session).toHaveTextContent('始终允许此命令');
+    expect(session).toHaveTextContent('项目范围内，后续相同命令不再询问');
+    expect(screen.getByTestId('decision-option-approve-once')).toHaveTextContent('仅允许这一次');
+    expect(screen.getByTestId('decision-option-reject')).toHaveTextContent('这次先拒绝');
+    // 反馈框占位与确认行提示（原型逐字）
+    expect(screen.getByTestId('decision-feedback')).toHaveAttribute(
+      'placeholder',
+      '告诉模型接下来应该怎么做...',
+    );
+    expect(screen.getByTestId('decision-form')).toHaveTextContent('使用 Tab / 上下键选择，回车确认');
+  });
+
+  it('文件变体（variant="file"）：第 2 档「始终允许本项目」+ 原型说明', () => {
+    render(<DecisionForm approvalId={APPROVAL_ID} args={ARGS} variant="file" />);
+    const session = screen.getByTestId('decision-option-approve-session');
+    expect(session).toHaveTextContent('始终允许本项目');
+    expect(session).toHaveTextContent('后续相同文件操作不再询问');
+  });
+
+  it('五个选项顺序稳定（契约 edit/respond 保位），选中态 aria-pressed 同步', async () => {
+    const user = userEvent.setup();
+    renderForm();
+    const group = screen.getByRole('group', { name: '决策选项' });
+    expect(Array.from(group.querySelectorAll('button')).map((b) => b.dataset.testid)).toEqual([
+      'decision-option-approve-once',
+      'decision-option-approve-session',
+      'decision-option-edit',
+      'decision-option-reject',
+      'decision-option-respond',
+    ]);
+
+    await user.click(screen.getByTestId('decision-option-reject'));
+    expect(screen.getByTestId('decision-option-reject')).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByTestId('decision-option-approve-once')).toHaveAttribute('aria-pressed', 'false');
+  });
+});
+
 describe('DecisionForm · 四决策提交体', () => {
   it('允许（once）：提交 {decision:approve, scope:once}；成功后本地落终态', async () => {
     const user = userEvent.setup();

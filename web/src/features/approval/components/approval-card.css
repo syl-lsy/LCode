@@ -1,0 +1,99 @@
+/* ==========================================================================
+   web/src/features/approval/components/approval-card.css — 审批卡页级样式
+   来源：design/prototype/approval-card.html（<style> 页面级类原样迁移，
+   类名一致；F14 审批两变体 + 拒绝闭环折叠态的呈现载体）。
+
+   未迁移清单（本批裁决，逐条注明）：
+   - .tool-card/.tic/.lb/code/.chev（工具卡族，task-conversation.css 已覆盖，
+     B2 定稿口径；本页卡片折叠态复用同一工具卡类）
+   - .grid/.loop-grid/.cell/.cap/.head/.wrap/.loop-cap/.diff-note
+     （原型页演示栅格与 demo 标注，评审件非产品 UI）
+   - .note/.event-chip/.theme-toggle（tokens.css 全局类）
+
+   亮（:root）暗（.dark）双主题逐处核对：全部取值走 var(--*) 语义 token。
+   ========================================================================== */
+
+/* ---------- 工具卡前置提示行：需要权限（警示三角 + 文案） ---------- */
+.need-p {
+  font-size: var(--text-ui-xs); font-weight: 600; color: var(--color-warning);
+  margin: 10px 0 8px; display: flex; align-items: center; gap: 6px;
+}
+
+/* ---------- 审批卡容器 ---------- */
+.approval {
+  border: 1px solid var(--color-accent-border); border-radius: var(--radius-lg);
+  background: var(--color-card); overflow: hidden;
+}
+
+/* ---------- 头部：工具 tag + 等待确认（风险徽标由组件以 Tailwind 追加右置） ---------- */
+.ap-head {
+  display: flex; align-items: center; gap: 8px; padding: 9px 12px;
+  border-bottom: 1px solid var(--color-border); background: var(--color-accent);
+}
+.ap-head .tag {
+  font-family: var(--font-mono); font-size: var(--text-ui-2xs);
+  color: var(--color-accent-foreground); border: 1px solid var(--color-accent-border);
+  border-radius: var(--radius-sm); padding: 2px 7px;
+}
+.ap-head .wait { font-size: var(--text-ui-xs); color: var(--color-accent-foreground); }
+
+/* ---------- 文件写入变体主体：文件图标 + 文件名 + 行数徽标 + 目录 ---------- */
+.ap-file {
+  display: flex; align-items: center; gap: 8px; padding: 9px 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+.ap-file .fn { font-family: var(--font-mono); font-size: var(--text-ui-sm); color: var(--color-foreground-strong); }
+.ap-file .pth { font-family: var(--font-mono); font-size: var(--text-ui-2xs); color: var(--color-foreground-subtlest); margin-left: auto; }
+
+/* ---------- Bash 命令变体主体：$ 前缀 + 命令原文 ---------- */
+.ap-cmd {
+  display: flex; gap: 9px; padding: 10px 12px;
+  background: var(--color-terminal-bg); border-bottom: 1px solid var(--color-border);
+}
+.ap-cmd .dollar { font-family: var(--font-mono); color: var(--color-terminal-green); flex: none; }
+.ap-cmd code {
+  font-family: var(--font-mono); font-size: var(--code-font-size);
+  color: var(--color-terminal-fg); word-break: break-all; line-height: 1.6;
+}
+
+/* ---------- 决策选项列表（1-4 档 + 契约扩展档） ---------- */
+.ap-opts { padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+.ap-opt {
+  display: flex; align-items: baseline; gap: 9px; min-height: 44px; padding: 8px 11px;
+  border: 1px solid transparent; border-radius: var(--radius-md);
+  text-align: left; width: 100%;
+  transition: background var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.ap-opt:hover { background: var(--color-surface-hover); }
+.ap-opt.sel { background: var(--color-accent); border-color: var(--color-accent-border); }
+.ap-opt .no { font-family: var(--font-mono); font-size: var(--text-ui-xs); color: var(--color-foreground-subtlest); flex: none; }
+.ap-opt .tt { font-size: var(--text-ui-sm); font-weight: 500; color: var(--color-foreground-strong); flex: none; }
+.ap-opt .ds { font-size: var(--text-ui-xs); color: var(--color-foreground-subtle); }
+.ap-opt .ck { margin-left: auto; color: var(--color-brand); visibility: hidden; flex: none; align-self: center; }
+.ap-opt.sel .ck { visibility: visible; }
+
+/* ---------- 第 5 档：拒绝反馈框 + 确认行 ---------- */
+.ap-foot { border-top: 1px solid var(--color-border); padding: 10px 12px 12px; }
+.ap-reject { display: flex; gap: 9px; align-items: flex-start; }
+.ap-reject .no { font-family: var(--font-mono); font-size: var(--text-ui-xs); color: var(--color-foreground-subtlest); padding-top: 9px; flex: none; }
+.ap-reject textarea {
+  flex: 1; min-height: 38px; resize: none;
+  border: 1px solid var(--color-border); border-radius: var(--radius-md);
+  background: var(--color-input); padding: 8px 10px;
+  font-size: var(--text-ui-xs); outline: none;
+}
+.ap-reject textarea::placeholder { color: var(--color-foreground-subtlest); }
+.ap-reject textarea:focus { border-color: var(--color-accent-border); }
+.ap-keys {
+  display: flex; align-items: center; gap: 6px; margin-top: 10px;
+  font-size: var(--text-ui-2xs); color: var(--color-foreground-subtlest);
+}
+.ap-keys .sp { flex: 1; }
+
+/* ---------- F14 ② 拒绝闭环：折叠后 agent 改道气泡（一行流式文本位） ---------- */
+.reroute {
+  border: 1px dashed var(--color-border-hover); border-radius: var(--radius-md);
+  background: var(--color-surface);
+  padding: 9px 12px; font-size: var(--text-ui-sm); color: var(--color-foreground);
+  line-height: 1.65; margin-bottom: 8px;
+}

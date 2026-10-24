@@ -1,0 +1,57 @@
+/* ==========================================================================
+   web/src/features/onboarding/onboarding.css — 新手引导页（3 步静态演示）
+   来源：design/prototype/onboarding.html（<style> 页面级类原样迁移，类名一致）。
+   B7 批（2026-10-24）落位；F27 三段进度条 + 12 项双列选项卡 + 勾选态。
+
+   未迁移清单（逐条注明）：
+   - body 布局（min-height 100vh / flex stretch）：React 侧改为页面根
+     Tailwind 等价类（flex min-h-screen items-stretch）；
+   - .main：与 app-shell.css 的 .main 同名——按 task-conversation.css 的
+     .col 同名裁决先例不重复定义，组件复用 .main（flex:1 纵向列语义一致）
+     并以内联 style 补本页特有 padding 22px 34px / overflow-y auto，卸载即除，
+     避免同名类跨页互相污染；
+   - .back-index（原型导航钮，评审脚手架非产品 UI）；
+   - 第 1 步 .note（Round 3 校准评审注释件，B0 口径不迁）；
+   - 第 3 步 .ph 占位块（原型即内联样式书写，无类定义；组件侧按原型内联
+     style 等价保留）。
+
+   亮（:root）暗（.dark）双主题逐处核对：全部取值走 var(--*) 语义 token
+   （含 color-mix 与 900px 断点原文照迁）。
+   ========================================================================== */
+
+.top { display: flex; align-items: center; height: 34px; margin-bottom: 8px; padding-right: 40px; }
+/* F27：顶部三段进度条（替代 round1 的文字步骤指示器；步骤名保留在 aria-label/title） */
+.prog { display: flex; gap: 6px; flex: 1; max-width: 420px; margin: 0 auto; }
+.prog .seg { flex: 1; height: 4px; border-radius: 999px; background: var(--color-surface-hover);
+             transition: background var(--dur-slow) var(--ease); }
+.prog .seg.on { background: var(--color-brand); }
+.prog .seg.done { background: color-mix(in oklab, var(--color-brand) 45%, transparent); }
+.exit { margin-left: auto; font-size: var(--text-ui-xs); color: var(--color-foreground-subtle); padding: 6px 10px; border-radius: var(--radius-sm); }
+.exit:hover { background: var(--color-surface-hover); color: var(--color-foreground); }
+.inner { width: 100%; max-width: 640px; margin: 0 auto; }
+.inner h1 { font-size: 24px; letter-spacing: -.01em; margin: 22px 0 8px; }
+.inner .lead { font-size: var(--text-ui-sm); color: var(--color-foreground-subtle); margin-bottom: 24px; }
+/* F27：12 项双列选项卡 */
+.cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 9px; margin-bottom: 18px; }
+.oc { position: relative; padding: 15px 13px; border: 1px solid var(--color-border); border-radius: var(--radius-lg);
+      background: var(--color-card); font-size: var(--text-ui-sm); text-align: left; color: var(--color-foreground);
+      transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease); }
+.oc:hover { border-color: var(--color-border-hover); background: var(--color-surface-hover); }
+.oc[aria-pressed="true"] { border-color: var(--color-accent-border); background: var(--color-accent); color: var(--color-accent-foreground); font-weight: 500; }
+/* F27：勾选态（选中卡右上角 ✓，替代 R2 的圆点） */
+.oc[aria-pressed="true"]::after { content: "✓"; position: absolute; top: 8px; right: 10px;
+      color: var(--color-accent-foreground); font-weight: 600; font-size: var(--text-ui-xs); }
+.oc b { display: block; font-weight: 500; margin-bottom: 3px; }
+.oc span { font-size: var(--text-ui-xs); color: var(--color-foreground-subtle); line-height: 1.5; display: block; }
+.oc[aria-pressed="true"] span { color: var(--color-accent-foreground); }
+.foot { display: flex; gap: 10px; }
+.foot .btn { min-width: 88px; height: 34px; }
+.aside { width: 320px; flex: none; border-left: 1px solid var(--color-border); background: var(--color-background-alt);
+         display: flex; flex-direction: column; justify-content: center; padding: 40px 34px; }
+.aside h2 { font-size: 22px; letter-spacing: -.01em; line-height: 1.35; margin-bottom: 12px; }
+.aside p { font-size: var(--text-ui-sm); color: var(--color-foreground-subtle); line-height: 1.7; }
+.aside .deco { margin-top: 26px; display: flex; flex-direction: column; gap: 8px; }
+.aside .deco i { display: block; height: 8px; border-radius: 4px; background: var(--color-surface-hover); }
+.aside .deco i:nth-child(2) { width: 72%; }
+.aside .deco i:nth-child(3) { width: 46%; }
+@media (max-width: 900px) { .aside { display: none; } }

@@ -21,7 +21,8 @@ export function StreamText({ messageId, streaming }: StreamTextProps) {
 
   if (text === '' && streaming) {
     return (
-      <div data-testid="stream-loading" className="flex items-center gap-2 py-1 text-[length:var(--text-ui-2xs)] text-foreground-subtlest">
+      /* .loading-row（task-conversation.css，来源 task-conversation.html 加载行） */
+      <div data-testid="stream-loading" className="loading-row">
         <span className="spinner flex-none" aria-hidden="true" />
         正在生成…
       </div>

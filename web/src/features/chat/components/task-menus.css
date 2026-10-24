@@ -1,0 +1,44 @@
+/* ==========================================================================
+   web/src/features/chat/components/task-menus.css — 任务菜单 + 分享勾选模式
+   来源：design/prototype/task-menus.html（<style> 页面级类原样迁移）。
+
+   命名空间说明：原型页 .thread 与 task-conversation.css 的消息流滚动容器 .thread
+   同名不同值——为不破坏消息流布局，分享勾选模式全部类收在根类 .share-sel 之下
+   （后代选择器，内部类名与原型逐字一致）。.share-sel-backdrop / .share-resid-wrap
+   是 LCode 新增的浮层/残留条外壳（原型为页面级 demo 布局），非原型类。
+
+   未迁移（原型演示脚手架 / 已有等价实现）：.wrap/.head/.grid/.cell/.cap（演示
+   布局）、.thead/.menu-wrap/.inner（任务头触发态演示——产品等价物 = .task-head
+   + components.css .menu/.mi 菜单基件，B5 口径；菜单项 .mi 微差 32px vs 34px
+   取 B5 收敛值）、.mi/.sep/.hint（跨页共享，components.css/tokens.css 已有）。
+   .task-head .icon-btn.hl 取原型 .thead .icon-btn.hl 同值（分享/更多激活态高亮，
+   挂在本产品头类 .task-head 下）。亮暗双主题逐处核对：全部取值走 var(--*) token。
+   ========================================================================== */
+
+/* 任务头部钮激活态（原型 .thead .icon-btn.hl 同值：分享/更多打开时高亮） */
+.task-head .icon-btn.hl { background: var(--color-accent); color: var(--color-accent-foreground); border: 1px solid var(--color-accent-border); }
+
+/* 浮层外壳（LCode 新增）：全屏遮罩 + 居中面板 */
+.share-sel-backdrop { position: fixed; inset: 0; z-index: 55; background: color-mix(in oklab, var(--color-background) 55%, transparent);
+                       display: flex; align-items: flex-start; justify-content: center; padding: 90px 24px 40px; }
+.share-sel { width: 100%; max-width: 560px; display: flex; flex-direction: column; gap: 0; }
+
+/* 分享 = 消息勾选模式（R4）：勾选若干用户消息后分享/导出 */
+.share-sel .thread { border: 1px solid var(--color-border); border-radius: var(--radius-md) var(--radius-md) 0 0; background: var(--color-panel);
+                     padding: 12px; display: flex; flex-direction: column; gap: 9px; max-height: 52vh; overflow-y: auto; }
+.share-sel .u-msg { display: flex; align-items: flex-start; gap: 9px; border: 1px solid var(--color-border); border-radius: var(--radius-md);
+                    background: var(--color-card); padding: 9px 11px; cursor: pointer; }
+.share-sel .u-msg input[type="checkbox"] { width: 15px; height: 15px; margin-top: 2px; accent-color: var(--color-brand); flex: none; cursor: pointer; }
+.share-sel .u-msg p { font-size: var(--text-ui-sm); color: var(--color-foreground-strong); line-height: 1.6; }
+.share-sel .u-msg.picked { border-color: var(--color-accent-border); background: var(--color-accent); }
+.share-sel .u-msg.picked p { color: var(--color-accent-foreground); }
+.share-sel .a-msg { border: 1px dashed var(--color-border); border-radius: var(--radius-md); padding: 8px 11px; font-size: var(--text-ui-sm); color: var(--color-foreground-subtle); }
+.share-sel .sel-bar { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border: 1px solid var(--color-accent-border); border-top: 0;
+                      border-radius: 0 0 var(--radius-md) var(--radius-md); background: var(--color-popover); box-shadow: var(--shadow-md); flex-wrap: wrap; }
+.share-sel .sel-bar .cnt { font-size: var(--text-ui-xs); color: var(--color-foreground-strong); font-weight: 500; }
+.share-sel .sel-bar .grow { flex: 1; }
+.share-sel .sel-bar .hint { flex: none; }
+/* 残留态（R4）：Esc 关闭面板后勾选保留，残留按钮可重新进入 */
+.share-resid-wrap { position: fixed; bottom: 96px; left: 50%; transform: translateX(-50%); z-index: 45; }
+.share-resid-wrap .resid { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border: 1px dashed var(--color-border-hover); border-radius: var(--radius-md);
+                           background: var(--color-card); box-shadow: var(--shadow-sm); }

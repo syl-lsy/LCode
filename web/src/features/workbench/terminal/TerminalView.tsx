@@ -5,6 +5,7 @@ import { useShallow } from 'zustand/react/shallow';
 import { useTerminalStore, type TerminalLifecycle } from '../store';
 
 import { EmptyState } from '@/components/EmptyState';
+import { Icon } from '@/components/Icon';
 
 /**
  * 终端视图（A4 §8.1 TerminalView 行 / §6.3；AC-002-1）。
@@ -77,7 +78,7 @@ export function TerminalView() {
       ) : (
         <div className="flex min-h-0 flex-1 items-center justify-center">
           <EmptyState
-            icon={<span aria-hidden="true">❯_</span>}
+            icon={<Icon name="terminal" size={16} />}
             title="终端 · 暂无输出"
             description="Agent 在沙箱中执行命令后，stdout/stderr 会在这里实时回显并标注来源命令。"
           />
@@ -119,7 +120,9 @@ function TerminalLines({
       ref={containerRef}
       onScroll={onScroll}
       data-testid="terminal-lines"
-      className="scroll-thin min-h-0 flex-1 overflow-y-auto bg-terminal-bg px-3 py-2 font-mono text-[length:var(--code-font-size)] leading-[1.7] whitespace-pre-wrap break-all text-terminal-fg"
+      /* .t-body（terminal-panel.css，来源 terminal-panel.html）：mono/code 字号/
+         terminal 调色 + pre-wrap 断行；min-h-0 保 flex 容器内可滚动 */
+      className="t-body scroll-thin min-h-0"
     >
       {execOrder.map((execId) => {
         const exec = execs.get(execId);

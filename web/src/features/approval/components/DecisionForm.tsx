@@ -4,21 +4,31 @@ import type { ApprovalDecisionRequest } from '@contracts/rest';
 
 import { decideApproval } from '@/api/approvals';
 import { ApiError } from '@/api/http';
+import { Icon } from '@/components/Icon';
 
 import { useApprovalStore } from '../store';
 
 /**
- * 决策表单（A4 §8.1 DecisionForm 行；approval-card.html 四决策 + 第 5 档反馈框）。
+ * 决策表单（A4 §8.1 DecisionForm 行；approval-card.html 决策选项 + 第 5 档反馈框）。
  *
- * - 四决策：允许（approve scope=once）/ 本会话内始终允许（approve scope=session，
- *   对应 PRD「会话级免审」口径）/ 修改参数后放行（edit，展开 args JSON 编辑器）/
- *   拒绝（reject，反馈可选附言）；
- * - 第 5 档反馈框同时服务 respond：选 respond 时 feedback 必填非空（就地报错）；
+ * - 选项文案两变体（approval-card.html §8/§9，逐字校对）：
+ *   - Bash 变体：允许 / 始终允许此命令 / 修改参数后放行 / 拒绝；
+ *   - 文件变体：允许 / 始终允许本项目 / 修改参数后放行 / 拒绝；
+ *   - 原型「完全访问」档不渲染：契约 ApprovalDecisionRequest 注明 scope=session
+ *     对应原型「完全访问/始终允许」的会话级持续免审——两者提交体相同，渲染两档
+ *     会造成同提交体的重复选项（差异说明见 docs/arch 与本批汇报）；
+ * - 第 3 档 edit（AC-006-3）与第 5 档 respond（AC-006-4）为契约决策，原型无对应
+ *   档，保留在列表中保证契约可达；第 5 档反馈框同时服务 reject 附言与 respond：
+ *   选 respond 时 feedback 必填非空（就地报错）；
  * - 提交中禁用全部控件、确认钮显示「提交中…」；失败经 ApiError 就地展示
  *   `决策提交失败（code）：message`，不裸抛（后端 APPROVAL_ALREADY_RESOLVED
  *   幂等 409 由该路径兜底）；
- * - 样式只用语义 token（accent/input/destructive/--text-ui-*），不写裸色值。
+ * - 样式走 approval-card.css 的 .ap-* 族（来源 approval-card.html）+ 语义 token，
+ *   不写裸色值。
  */
+
+/** 决策变体（approval-card.html 两变体；Bash 命令类 / 文件写入类）。 */
+export type ApprovalVariant = 'bash' | 'file';
 
 /** 选项键（approve 拆成 once/session 两项；其余与契约 decision 字面量一一对应）。 */
 export type DecisionOptionKey = 'approve-once' | 'approve-session' | 'edit' | 'reject' | 'respond';
@@ -54,21 +64,39 @@ export function parseEditedArgs(text: string): ParsedArgsResult {
   return { ok: true, args: parsed as Record<string, unknown> };
 }
 
-const OPTIONS: readonly { readonly key: DecisionOptionKey; readonly title: string; readonly desc: string }[] = [
-  { key: 'approve-once', title: '允许', desc: '仅允许这一次' },
-  { key: 'approve-session', title: '本会话内始终允许', desc: '会话内同类操作不再询问（升级为自动审批）' },
-  { key: 'edit', title: '修改参数后放行', desc: '编辑参数后继续执行' },
-  { key: 'reject', title: '拒绝', desc: '这次先拒绝，可在下方附说明' },
-  { key: 'respond', title: '给出反馈后继续', desc: '不改放行决策，把指示反馈给模型' },
-];
+interface DecisionOption {
+  readonly key: DecisionOptionKey;
+  readonly title: string;
+  readonly desc: string;
+}
+
+/**
+ * 变体感知选项表：第 1/2/4 档文案与原型逐字一致；第 3 档 edit 与第 5 档 respond
+ * 为契约决策（AC-006-3/4），原型无对应档。
+ */
+function optionsOf(variant: ApprovalVariant): readonly DecisionOption[] {
+  const alwaysAllow: DecisionOption =
+    variant === 'file'
+      ? { key: 'approve-session', title: '始终允许本项目', desc: '后续相同文件操作不再询问' }
+      : { key: 'approve-session', title: '始终允许此命令', desc: '项目范围内，后续相同命令不再询问' };
+  return [
+    { key: 'approve-once', title: '允许', desc: '仅允许这一次' },
+    alwaysAllow,
+    { key: 'edit', title: '修改参数后放行', desc: '编辑参数后继续执行' },
+    { key: 'reject', title: '拒绝', desc: '这次先拒绝' },
+    { key: 'respond', title: '给出反馈后继续', desc: '不改放行决策，把指示反馈给模型' },
+  ];
+}
 
 export interface DecisionFormProps {
   readonly approvalId: string;
   /** 原始 args（编辑器初值；提交 edit 时以编辑器当前文本为准） */
   readonly args: Readonly<Record<string, unknown>>;
+  /** 审批卡变体（决定第 2 档文案；缺省 Bash 变体） */
+  readonly variant?: ApprovalVariant;
 }
 
-export function DecisionForm({ approvalId, args }: DecisionFormProps) {
+export function DecisionForm({ approvalId, args, variant = 'bash' }: DecisionFormProps) {
   const deciding = useApprovalStore((s) => s.deciding.has(approvalId));
   const setDeciding = useApprovalStore((s) => s.setDeciding);
   const applyResolved = useApprovalStore((s) => s.applyResolved);
@@ -165,8 +193,9 @@ export function DecisionForm({ approvalId, args }: DecisionFormProps) {
       aria-label="审批决策"
       className="flex flex-col"
     >
-      <div role="group" aria-label="决策选项" className="flex flex-col gap-0.5 p-1.5">
-        {OPTIONS.map((option, index) => {
+      {/* .ap-opts / .ap-opt（approval-card.css，来源 approval-card.html 决策选项列表） */}
+      <div role="group" aria-label="决策选项" className="ap-opts">
+        {optionsOf(variant).map((option, index) => {
           const selected = choice === option.key;
           return (
             <button
@@ -176,26 +205,13 @@ export function DecisionForm({ approvalId, args }: DecisionFormProps) {
               aria-pressed={selected}
               disabled={deciding}
               onClick={() => selectOption(option.key)}
-              className={`flex min-h-[40px] items-baseline gap-2.5 rounded-md border px-3 py-2 text-left transition-colors ${
-                selected
-                  ? 'border-accent-border bg-accent'
-                  : 'border-transparent hover:bg-surface-hover'
-              }`}
+              className={selected ? 'ap-opt sel' : 'ap-opt'}
             >
-              <span className="flex-none font-mono text-[length:var(--text-ui-xs)] text-foreground-subtlest">
-                {index + 1}.
-              </span>
-              <span className="flex-none font-medium text-[length:var(--text-ui-sm)] text-foreground-strong">
-                {option.title}
-              </span>
-              <span className="min-w-0 flex-1 truncate text-[length:var(--text-ui-xs)] text-foreground-subtle">
-                {option.desc}
-              </span>
-              {selected && (
-                <span aria-hidden="true" className="flex-none self-center text-brand">
-                  ✓
-                </span>
-              )}
+              <span className="no">{index + 1}.</span>
+              <span className="tt">{option.title}</span>
+              <span className="ds">{option.desc}</span>
+              {/* .ck 选中勾：CSS visibility 控制显隐（与原型标记同构） */}
+              <Icon name="check" size={13} className="ck" />
             </button>
           );
         })}
@@ -230,45 +246,40 @@ export function DecisionForm({ approvalId, args }: DecisionFormProps) {
         </div>
       )}
 
-      <div className="flex flex-col gap-2 border-t border-border px-3 pt-2.5 pb-3">
-        <div className="flex items-start gap-2.5">
-          <span className="flex-none pt-2 font-mono text-[length:var(--text-ui-xs)] text-foreground-subtlest">
-            5.
-          </span>
+      {/* .ap-foot / .ap-reject / .ap-keys（approval-card.css，第 5 档反馈框 + 确认行） */}
+      <div className="ap-foot">
+        <div className="ap-reject">
+          {/* 原型口径：第 5 档编号前缀（approval-card.html .ap-reject 内 <span class="no">5.</span>） */}
+          <span className="no">5.</span>
           <textarea
             id={feedbackId}
             data-testid="decision-feedback"
             value={feedback}
             disabled={deciding}
             rows={2}
-            placeholder={
-              choice === 'respond'
-                ? '必填：告诉模型接下来应该怎么做…'
-                : '可选：附言 / 告诉模型接下来应该怎么做…'
-            }
+            aria-label="拒绝反馈 / 给模型的指示（选「给出反馈后继续」时必填）"
+            placeholder="告诉模型接下来应该怎么做..."
             onChange={(event) => {
               setFeedback(event.target.value);
               setError(null);
             }}
-            className="min-h-[38px] flex-1 resize-none rounded-md border border-border bg-input px-2.5 py-2 text-[length:var(--text-ui-xs)] text-foreground outline-none placeholder:text-foreground-subtlest focus:border-accent-border"
           />
         </div>
-        <div className="flex items-center gap-1.5">
-          <span className="text-[length:var(--text-ui-2xs)] text-foreground-subtlest">
-            Tab / 上下键选择，回车确认
-          </span>
-          <span className="flex-1" aria-hidden="true" />
+        <div className="ap-keys">
+          使用 Tab / 上下键选择，回车确认
+          <span className="sp" aria-hidden="true" />
           <button
             type="submit"
             data-testid="decision-submit"
             disabled={deciding}
             className="btn btn-primary btn-sm"
+            style={{ height: 28, padding: '0 16px' }}
           >
             {deciding ? '提交中…' : '确认'}
           </button>
         </div>
         {error !== null && (
-          <p data-testid="decision-error" role="alert" className="text-[length:var(--text-ui-xs)] text-destructive">
+          <p data-testid="decision-error" role="alert" className="mt-1.5 text-[length:var(--text-ui-xs)] text-destructive">
             {error}
           </p>
         )}

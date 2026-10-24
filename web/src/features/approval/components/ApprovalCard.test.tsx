@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
 /**
- * ApprovalCard（AC-006-1~5；approval-card.html 视觉）：
- * - pending 完整卡：工具标签/等待确认/risk 徽标/reason/args 原文完整 + DecisionForm；
+ * ApprovalCard（AC-006-1~5；approval-card.html 视觉，B3）：
+ * - pending 完整卡：ap-head 工具 tag/等待确认/风险徽标 + reason + 变体主体
+ *   （Bash→approval-cmd；文件写入→approval-file；其余工具→args JSON 兜底）+ DecisionForm；
  * - 五种终态折叠为一行，文案正确（auto_approved=「已自动通过」）；
+ * - 拒绝且带反馈（F14 拒绝闭环）：折叠为「终端」完成态工具行 + 改道气泡；
  * - store 载荷缺失退化为占位行（fallbackStatus）；testid 契约保持 approval-row。
  */
 import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 
 import { useApprovalStore, type ApprovalEntry, type ApprovalStatus } from '../store';
 import '../../../tests/test-utils';
@@ -33,28 +35,70 @@ function entry(overrides: Partial<ApprovalEntry> = {}): Omit<
   };
 }
 
-describe('ApprovalCard · pending 完整卡', () => {
-  it('载荷齐备：工具标签 + 等待确认 + high 风险徽标 + reason + args 原文完整可见 + 决策表单', () => {
+beforeEach(() => {
+  useApprovalStore.getState().reset();
+});
+
+describe('ApprovalCard · pending 完整卡（Bash 变体）', () => {
+  it('载荷齐备：need-p 提示 + Bash tag/等待确认 + high 风险徽标 + reason + 命令原文 + 决策表单', () => {
     useApprovalStore.getState().upsertPending(entry());
     render(<ApprovalCard approvalId={ID} tool="execute" fallbackStatus="pending" />);
 
     const row = screen.getByTestId('approval-row');
     expect(row).toHaveAttribute('data-status', 'pending');
+    expect(row).toHaveAttribute('data-variant', 'bash');
+    // .need-p 前置提示（approval-card.html）
+    expect(screen.getByText('需要权限')).toBeInTheDocument();
+    // .ap-head：Bash tag + 等待确认
+    expect(screen.getByText('Bash')).toBeInTheDocument();
+    expect(screen.getByText('等待确认')).toBeInTheDocument();
     expect(screen.getByTestId('approval-risk')).toHaveAttribute('data-risk', 'high');
     expect(screen.getByTestId('approval-risk')).toHaveTextContent('高风险');
     expect(screen.getByTestId('approval-reason')).toHaveTextContent('命中危险命令规则：rm -rf');
-    // args 原文完整（不截断、键值俱在）
-    const args = screen.getByTestId('approval-args');
-    expect(args).toHaveTextContent('"command": "rm -rf build/"');
-    expect(args).toHaveTextContent('"timeout": 120');
+    // .ap-cmd：命令原文完整（$ + command）
+    expect(screen.getByTestId('approval-cmd')).toHaveTextContent('rm -rf build/');
     expect(screen.getByTestId('decision-form')).toBeInTheDocument();
+    // Bash 变体不再渲染 JSON 兜底块与文件行
+    expect(screen.queryByTestId('approval-args')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('approval-file')).not.toBeInTheDocument();
   });
+});
 
-  it('medium 风险徽标（write_file 变体）', () => {
-    useApprovalStore.getState().upsertPending(entry({ tool: 'write_file', riskLevel: 'medium' }));
+describe('ApprovalCard · pending 完整卡（文件写入变体）', () => {
+  it('write_file：写入 tag + 文件行（文件名 + 写入行数徽标 + 目录）', () => {
+    useApprovalStore.getState().upsertPending(
+      entry({
+        tool: 'write_file',
+        riskLevel: 'medium',
+        args: { path: 'obs-demo/hello.py', content: 'print("hi")\nprint(2)' },
+        reason: null,
+      }),
+    );
     render(<ApprovalCard approvalId={ID} tool="write_file" fallbackStatus="pending" />);
+
+    expect(screen.getByTestId('approval-row')).toHaveAttribute('data-variant', 'file');
+    expect(screen.getByText('写入')).toBeInTheDocument();
     expect(screen.getByTestId('approval-risk')).toHaveAttribute('data-risk', 'medium');
     expect(screen.getByTestId('approval-risk')).toHaveTextContent('中风险');
+    const fileRow = screen.getByTestId('approval-file');
+    expect(fileRow).toHaveTextContent('hello.py');
+    expect(screen.getByTestId('approval-file-add')).toHaveTextContent('+2');
+    expect(fileRow).toHaveTextContent('obs-demo/');
+    expect(screen.queryByTestId('approval-cmd')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('approval-args')).not.toBeInTheDocument();
+  });
+
+  it('特征提取不到（非命令非文件工具）：args JSON 原文兜底可见', () => {
+    useApprovalStore.getState().upsertPending(
+      entry({ tool: 'grep', args: { pattern: 'TODO', path: 'src/' } }),
+    );
+    render(<ApprovalCard approvalId={ID} tool="grep" fallbackStatus="pending" />);
+
+    const args = screen.getByTestId('approval-args');
+    expect(args).toHaveTextContent('"pattern": "TODO"');
+    expect(args).toHaveTextContent('"path": "src/"');
+    expect(screen.queryByTestId('approval-cmd')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('approval-file')).not.toBeInTheDocument();
   });
 });
 
@@ -118,6 +162,42 @@ describe('ApprovalCard · 终态折叠', () => {
     const { container } = render(<ApprovalCard approvalId={ID} tool="write_file" fallbackStatus="pending" />);
     expect(screen.getByTestId('approval-row')).toHaveTextContent('已自动通过');
     expect(container.textContent).not.toContain('已回复');
+  });
+});
+
+describe('ApprovalCard · F14 拒绝闭环（R3§E：拒绝 + 反馈 → 折叠工具行 + 改道气泡）', () => {
+  it('rejected 且带反馈：折叠为「终端」完成态工具行 + reroute 气泡（通用改道文案）', () => {
+    useApprovalStore.getState().upsertPending(entry({ args: { command: 'mkdir -p /root/obs-demo' } }));
+    useApprovalStore.getState().applyResolved({
+      approvalId: ID,
+      decision: 'reject',
+      feedback: '无需建目录检查那步，直接创建文件',
+      decidedBy: 'local',
+    });
+    render(<ApprovalCard approvalId={ID} tool="execute" fallbackStatus="pending" />);
+
+    const row = screen.getByTestId('approval-row');
+    expect(row).toHaveAttribute('data-status', 'rejected');
+    expect(row).toHaveAttribute('data-feedback', 'true');
+    // 折叠态工具行：终端标签 + 命令原文
+    const folded = screen.getByTestId('approval-folded-tool');
+    expect(folded).toHaveTextContent('终端');
+    expect(folded).toHaveTextContent('mkdir -p /root/obs-demo');
+    // 改道气泡：一行流式文本位
+    expect(screen.getByTestId('approval-reroute')).toHaveTextContent(
+      '收到反馈：无需建目录检查那步，直接创建文件',
+    );
+    expect(screen.queryByTestId('decision-form')).not.toBeInTheDocument();
+  });
+
+  it('rejected 无反馈：维持普通终态行（不误入折叠闭环形态）', () => {
+    useApprovalStore.getState().upsertPending(entry());
+    useApprovalStore.getState().applyResolved({ approvalId: ID, decision: 'reject', decidedBy: 'local' });
+    render(<ApprovalCard approvalId={ID} tool="execute" fallbackStatus="pending" />);
+
+    expect(screen.getByTestId('approval-row')).toHaveTextContent('已拒绝');
+    expect(screen.queryByTestId('approval-folded-tool')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('approval-reroute')).not.toBeInTheDocument();
   });
 });
 

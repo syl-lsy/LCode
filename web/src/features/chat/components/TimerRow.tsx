@@ -1,10 +1,13 @@
 import { useEffect, useState } from 'react';
 
+import { Icon } from '@/components/Icon';
+
 /**
  * 计时器行（A4 §8.1 TimerRow 行；F3 = 中间步骤总折叠开关）。
  *
  * 运行中 = spinner + 「工作中 N 秒」；收口 = 打勾 + 「已工作 M 分 S 秒」。
- * 点击整行切换折叠：收起时行文案不变，思考块+工具卡整体藏入该行（R3§D）。
+ * 点击整行切换折叠：收起时行文案不变，思考块+工具卡整体藏入该行（R3§D）；
+ * chevron 随折叠态旋转（.timer.collapsed → -90deg，原型同款）。
  */
 
 function formatElapsed(totalSeconds: number): string {
@@ -46,21 +49,18 @@ export function TimerRow({ running, startedAt, collapsed, onToggle }: TimerRowPr
       data-testid="timer-row"
       aria-expanded={!collapsed}
       onClick={onToggle}
-      className="mb-2.5 inline-flex h-7 cursor-pointer items-center gap-1.5 rounded-full border border-border bg-card px-3 text-[length:var(--text-ui-xs)] text-foreground select-none hover:border-border-hover"
+      /* .timer.tgl（task-conversation.css，来源 task-conversation.html F3 计时器行） */
+      className={`timer tgl ${collapsed ? 'collapsed' : ''}`}
+      title="点击收起/展开中间步骤（思考块+工具卡）"
     >
       {running ? (
         <span className="spinner flex-none" aria-hidden="true" />
       ) : (
-        <span aria-hidden="true" className="flex-none text-success">
-          ✓
-        </span>
+        <Icon name="check" size={12} className="text-success" />
       )}
       {label}
-      <span
-        aria-hidden="true"
-        className={`flex-none text-foreground-subtlest transition-transform ${collapsed ? '-rotate-90' : ''}`}
-      >
-        ▾
+      <span className="chev" aria-hidden="true">
+        <Icon name="chevron-down" size={10} />
       </span>
     </button>
   );

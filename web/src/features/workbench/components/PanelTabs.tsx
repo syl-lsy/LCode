@@ -1,62 +1,86 @@
-import { useState } from 'react';
+import { TASK_TAB_ID, useWorkbenchStore } from '../store';
 
-import { useWorkbenchStore, type TabKind } from '../store';
+import { Icon } from '@/components/Icon';
 
 /**
- * 标签条（A4 §8.1 PanelTabs 行；R10/RD#45 通用容器）：功能标签 + 「新增标签」
- * 面板内右上选择器 + 收起钮。M2 开放集合里可建的标签：终端（功能标签）、
- * 浏览器/辅助对话（P1 置灰占位）；审查标签 M3 由 diff 流程经 openTab 打开。
+ * 标签条（A4 §8.1 PanelTabs 行；R10/RD#45 通用容器。来源：
+ * design/prototype/side-panels.html p-head，样式类 components/side-panels.css）。
+ *
+ * tablist 口径（F25）：搜索｜任务名（首标签，无 ×）｜功能/产物标签 ×｜＋ 新增｜收起。
+ * - 任务名标签 = 会话首标签（RD#45）：展示层伪标签（不入 store.tabs，无关闭语义），
+ *   点击激活 TASK_TAB_ID → WorkbenchPanel 分发 TaskSummaryPane；仅会话视图
+ *   （sessionTitle 传入）渲染；
+ * - 「搜索标签页」与「＋ 新增标签」都触发「打开标签页」选择器（原型同款）。选择器
+ *   开合态由 WorkbenchPanel 持有（单实例语义：无标签空态本身就是选择器，此刻
+ *   弹层不再重复渲染）；子标签 kind 特型：subagent → sa-tab（运行光点随 M4 启用）、
+ *   浏览器占位 → p2-tab + P2 灰角标；
+ * - 审查标签 M3 由 diff 流程经 openReviewTab 打开，不在选择器手开。
  */
-
-interface ChooserEntry {
-  readonly key: string;
-  readonly label: string;
-  readonly disabled: boolean;
-  readonly kind: TabKind;
-  readonly id: string;
-  readonly title: string;
+export interface PanelTabsProps {
+  /** 任务名标签文案（null = 无会话上下文，不渲染任务名标签） */
+  sessionTitle?: string | null;
+  /** 「打开标签页」选择器开合态（WorkbenchPanel 持有，保证单实例） */
+  chooserOpen?: boolean;
+  onToggleChooser?: () => void;
 }
 
-const CHOOSER_ENTRIES: readonly ChooserEntry[] = [
-  { key: 'terminal', label: '终端', disabled: false, kind: 'terminal', id: 'main', title: '终端' },
-  { key: 'browser', label: '浏览器', disabled: false, kind: 'placeholder', id: 'browser', title: '浏览器' },
-  { key: 'assist', label: '辅助对话', disabled: false, kind: 'placeholder', id: 'assist', title: '辅助对话' },
-];
-
-export function PanelTabs() {
+export function PanelTabs({ sessionTitle, chooserOpen = false, onToggleChooser }: PanelTabsProps) {
   const tabs = useWorkbenchStore((s) => s.tabs);
   const activeTabId = useWorkbenchStore((s) => s.activeTabId);
   const setActiveTab = useWorkbenchStore((s) => s.setActiveTab);
   const closeTab = useWorkbenchStore((s) => s.closeTab);
-  const openTab = useWorkbenchStore((s) => s.openTab);
   const setCollapsed = useWorkbenchStore((s) => s.setCollapsed);
-  const [chooserOpen, setChooserOpen] = useState(false);
+
+  /** 任务名标签（F25）：有会话标题才渲染（首页无会话上下文） */
+  const taskTabTitle = sessionTitle != null && sessionTitle.trim() !== '' ? sessionTitle.trim() : sessionTitle != null ? '会话' : null;
+  const toggleChooser = (): void => onToggleChooser?.();
 
   return (
-    <div data-testid="panel-tabs" className="flex h-10 flex-none items-center gap-0.5 border-b border-border pr-1 pl-1.5">
-      <div data-testid="panel-tab-strip" className="flex min-w-0 flex-1 items-center gap-0.5 overflow-x-auto [scrollbar-width:none]">
+    <div data-testid="panel-tabs" className="p-head">
+      <button
+        type="button"
+        data-testid="panel-search-tab"
+        aria-label="搜索标签页"
+        aria-expanded={chooserOpen}
+        title="搜索标签页"
+        className="icon-btn h-[22px] w-[22px]"
+        onClick={toggleChooser}
+      >
+        <Icon name="search" size={11} />
+      </button>
+      <div data-testid="panel-tab-strip" className="strip">
+        {taskTabTitle !== null && (
+          <button
+            type="button"
+            data-testid="panel-task-tab"
+            className={`panel-tab task-tab${activeTabId === TASK_TAB_ID ? ' on' : ''}`}
+            title={`任务名标签：${taskTabTitle}`}
+            onClick={() => setActiveTab(TASK_TAB_ID)}
+          >
+            <span className="tt">{taskTabTitle}</span>
+          </button>
+        )}
         {tabs.map((tab) => (
           <div
             key={tab.id}
             data-testid="panel-tab"
             data-active={tab.id === activeTabId}
-            className={`flex h-[26px] flex-none items-center gap-1 rounded-sm px-2 text-[length:var(--text-ui-2xs)] whitespace-nowrap ${
-              tab.id === activeTabId
-                ? 'border border-border bg-card text-foreground-strong'
-                : 'text-foreground-subtle hover:bg-surface-hover'
-            }`}
+            className={`panel-tab${tab.id === activeTabId ? ' on' : ''}${
+              tab.kind === 'subagent' ? ' sa-tab' : ''
+            }${tab.id === 'placeholder:browser' ? ' p2-tab' : ''}`}
           >
             <button type="button" className="max-w-[120px] truncate" onClick={() => setActiveTab(tab.id)}>
               {tab.title}
             </button>
+            {tab.id === 'placeholder:browser' && <span className="badge flex-none">P2</span>}
             <button
               type="button"
               aria-label={`关闭 ${tab.title}`}
               data-testid="panel-tab-close"
-              className="flex h-4 w-4 items-center justify-center rounded-full text-foreground-subtlest hover:bg-surface-hover hover:text-foreground-strong"
+              className="x"
               onClick={() => closeTab(tab.id)}
             >
-              ×
+              <Icon name="close" size={9} />
             </button>
           </div>
         ))}
@@ -66,43 +90,22 @@ export function PanelTabs() {
         data-testid="panel-add-tab"
         aria-label="新增标签"
         aria-expanded={chooserOpen}
-        className="icon-btn h-[22px] w-[22px] text-[12px]"
-        onClick={() => setChooserOpen((v) => !v)}
+        title="新增标签"
+        className="icon-btn h-[22px] w-[22px]"
+        onClick={toggleChooser}
       >
-        ＋
+        <Icon name="plus" size={12} />
       </button>
       <button
         type="button"
         data-testid="panel-collapse"
         aria-label="收起侧边面板"
-        className="icon-btn h-[22px] w-[22px] text-[12px]"
+        title="收起侧边面板"
+        className="icon-btn h-[22px] w-[22px]"
         onClick={() => setCollapsed(true)}
       >
-        ▸
+        <Icon name="panel" size={12} />
       </button>
-      {chooserOpen && (
-        <div
-          data-testid="panel-chooser"
-          className="absolute top-2 right-2 z-40 w-[218px] rounded-lg border border-border-hover bg-popover p-3.5 shadow-lg"
-        >
-          <p className="mb-1 text-[length:var(--text-ui-base)] font-semibold text-foreground-strong">打开标签页</p>
-          <p className="mb-3 text-[length:var(--text-ui-2xs)] text-foreground-subtle">选择要在侧边面板中打开的标签。</p>
-          {CHOOSER_ENTRIES.map((entry) => (
-            <button
-              key={entry.key}
-              type="button"
-              data-testid={`panel-chooser-${entry.key}`}
-              className="mb-1.5 flex h-9 w-full items-center gap-2 rounded-md border border-border bg-card px-2.5 text-[length:var(--text-ui-xs)] hover:border-border-hover hover:bg-surface-hover"
-              onClick={() => {
-                openTab({ kind: entry.kind, id: entry.id, title: entry.title });
-                setChooserOpen(false);
-              }}
-            >
-              {entry.label}
-            </button>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

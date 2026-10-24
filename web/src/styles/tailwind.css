@@ -1,5 +1,6 @@
 @import "tailwindcss";
 @import "./tokens.css";
+@import "./components.css";
 
 /* ==========================================================================
    Tailwind v4 桥接层（A4 §9.3）

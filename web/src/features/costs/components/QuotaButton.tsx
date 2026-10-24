@@ -3,18 +3,33 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { getCostSummary, getSessionCost } from '@/api/costs';
 import type { CostSummary, SessionCost } from '@contracts/rest';
 
-import { Spinner } from '@/components/Spinner';
+import { Icon } from '@/components/Icon';
 
-import { SessionCostCard, formatCost } from './SessionCostCard';
+import { formatCost } from './SessionCostCard';
 
 /**
  * 剩余额度环形钮 + 三档浮层（A4 §8.1 QuotaButton 行；F22 / AC-015-2/3）。
  *
- * 浮层三块：本会话（GET /sessions/{id}/costs）+ 今日（summary dimension=date）+
- * 模型分摊（summary dimension=model）——并发 3 请求（A4 §12 未决 8 默认方案）。
- * 无会话（首页）时钮置灰。环形进度无配额总量语义（P2 计费前无真实 quota 端点），
- * 圆环仅作成本入口图标（不伪造百分比）。
+ * F22 结构（toolbar-menus 浮层一比一）：头部 pill-green（本月预算剩余 64% 演示文案）
+ * + 「更多 >」占位 + 三档额度卡 = 本会话成本 / 今日累计 / 本月累计（REQ-015 AC-015-3
+ * 会话成本口径；P2 对接供应商配额前不做 5 小时/每周/MCP 官方结构）。
+ *
+ * 数据：本会话（GET /sessions/{id}/costs）+ 今日（summary dimension=date）并发 2 请求
+ * （模型分摊块随 F22 三卡结构移除，A4 §12 未决 8 的备选不再采用）；本月累计无后端
+ * 汇总端点，为静态演示卡。进度条分母为演示预算（P2 计费前无真实 quota 端点，圆环
+ * 仅作成本入口图标不伪造百分比）。
+ * 交互：官方行为 = 悬停出浮层（点击无浮层）；此处悬停展开 + 点击为键盘路径，
+ * 移出浮层范围 / 外部点击关闭。无会话（首页）时钮置灰。
  */
+
+/** 演示预算分母与本月演示卡（P2 计费前为演示件）。 */
+const DEMO_BUDGET = { session: 2, date: 8 } as const;
+const DEMO_MONTH = { used: 42.6, budget: 120, pct: 36, reset: '11 月 1 日重置' } as const;
+
+function percent(used: number, budget: number): number {
+  return Math.min(100, Math.round((used / budget) * 100));
+}
+
 export interface QuotaButtonProps {
   sessionId?: string | null;
 }
@@ -22,34 +37,30 @@ export interface QuotaButtonProps {
 interface QuotaData {
   readonly sessionCost: SessionCost | null;
   readonly byDate: CostSummary | null;
-  readonly byModel: CostSummary | null;
 }
 
-const IDLE = { sessionCost: null, byDate: null, byModel: null } as const;
+const IDLE = { sessionCost: null, byDate: null } as const;
 
 export function QuotaButton({ sessionId }: QuotaButtonProps) {
   const [open, setOpen] = useState(false);
   const [data, setData] = useState<QuotaData>(IDLE);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
+  const disabled = sessionId == null;
+
   const load = useCallback(async (): Promise<void> => {
     if (sessionId == null) return;
-    setLoading(true);
     setError(false);
     try {
-      const [sessionCost, byDate, byModel] = await Promise.all([
+      const [sessionCost, byDate] = await Promise.all([
         getSessionCost(sessionId),
         getCostSummary('date'),
-        getCostSummary('model'),
       ]);
-      setData({ sessionCost, byDate, byModel });
+      setData({ sessionCost, byDate });
     } catch (err) {
       console.error('[costs] 成本数据加载失败：', err);
       setError(true);
-    } finally {
-      setLoading(false);
     }
   }, [sessionId]);
 
@@ -69,19 +80,31 @@ export function QuotaButton({ sessionId }: QuotaButtonProps) {
     return () => document.removeEventListener('pointerdown', onPointerDown);
   }, [open]);
 
-  const disabled = sessionId == null;
+  const sessionTotal =
+    data.sessionCost === null ? 0.42 : data.sessionCost.model_cost + data.sessionCost.sandbox.accrued;
+  const sessionPct = percent(sessionTotal, DEMO_BUDGET.session);
+  const dateTotal = data.byDate === null ? 3.18 : data.byDate.rows.reduce((total, row) => total + row.cost, 0);
+  const datePct = percent(dateTotal, DEMO_BUDGET.date);
 
   return (
-    <div ref={rootRef} className="relative inline-flex">
+    /* F22：悬停出浮层（官方行为），移出范围关闭；点击为键盘路径 */
+    <div
+      ref={rootRef}
+      className="relative inline-flex"
+      onMouseEnter={() => {
+        if (!disabled) setOpen(true);
+      }}
+      onMouseLeave={() => setOpen(false)}
+    >
       <button
         type="button"
         data-testid="quota-button"
-        aria-label="成本与额度"
+        aria-label="剩余额度"
         aria-expanded={open}
         disabled={disabled}
-        title={disabled ? '成本（建会话后可用）' : '成本与额度（本会话/今日/模型）'}
-        className="inline-flex h-[26px] w-[26px] flex-none items-center justify-center rounded-sm hover:bg-surface-hover disabled:cursor-not-allowed disabled:opacity-45"
-        onClick={() => setOpen((v) => !v)}
+        title={disabled ? '剩余额度（建会话后可用）' : '剩余额度（悬停或点击展开）'}
+        className="quota-ring disabled:cursor-not-allowed disabled:opacity-45"
+        onClick={() => setOpen(true)}
       >
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" aria-hidden="true">
           <circle cx="12" cy="12" r="9" stroke="var(--color-quota-track)" strokeWidth="3" />
@@ -101,50 +124,89 @@ export function QuotaButton({ sessionId }: QuotaButtonProps) {
         <div
           data-testid="quota-popover"
           role="dialog"
-          aria-label="成本与额度"
-          className="absolute bottom-[calc(100%+8px)] left-0 z-50 w-[300px] rounded-lg border border-border-hover bg-popover p-3 shadow-lg"
+          aria-label="剩余额度"
+          /* .menu（components.css，toolbar-menus 浮层容器）+ 向上弹出 */
+          className="menu absolute bottom-[calc(100%+8px)] left-0 z-50 w-[300px]"
         >
-          <p className="mb-2 text-[length:var(--text-ui-xs)] font-semibold text-foreground-strong">成本与额度</p>
-          {loading && (
-            <div className="flex items-center gap-2 py-2 text-foreground-subtle">
-              <Spinner /> 加载中…
+          <div className="ov-head">
+            <b>剩余额度</b>
+            {/* 演示 pill（P2 计费前无真实预算；文案语境化照原型） */}
+            <span className="pill-green" data-testid="quota-pill">
+              <Icon name="gift" size={11} /> 本月预算剩余 64%
+            </span>
+            <button
+              type="button"
+              className="more"
+              data-testid="quota-more"
+              disabled
+              title="设置 · 使用统计子页（P1 占位）"
+            >
+              更多 &gt;
+            </button>
+          </div>
+          <div className="ov-body">
+            {error && (
+              <p className="mb-1 text-[length:var(--text-ui-2xs)] text-destructive" role="alert">
+                成本数据暂不可用，以下为演示数据。
+              </p>
+            )}
+            <div className="qcard" data-testid="quota-card-session">
+              <div className="qt">
+                本会话成本
+                <span className="qv" data-testid="quota-session-value">
+                  {formatCost(sessionTotal)} / {formatCost(DEMO_BUDGET.session)}
+                </span>
+              </div>
+              <div className="qbar">
+                <i
+                  data-testid="quota-bar-session"
+                  style={{ width: `${sessionPct}%`, background: 'var(--color-quota-1)' }}
+                />
+              </div>
+              <div className="qr">
+                <span>随会话结束归档结算</span>
+                <span className="mono">{sessionPct}%</span>
+              </div>
             </div>
-          )}
-          {!loading && error && (
-            <p className="py-2 text-[length:var(--text-ui-xs)] text-destructive" role="alert">
-              成本数据暂不可用，稍后重试。
-            </p>
-          )}
-          {!loading && !error && (
-            <div className="flex flex-col gap-2">
-              {data.sessionCost !== null && <SessionCostCard cost={data.sessionCost} />}
-              {data.byDate !== null && (
-                <div data-testid="quota-by-date" className="rounded-md border border-border bg-card px-3 py-2 text-[length:var(--text-ui-xs)]">
-                  <span className="text-foreground-subtle">今日成本 </span>
-                  <span data-testid="quota-date-total" className="ml-auto font-mono">
-                    {formatCost(sumRows(data.byDate))}
-                  </span>
-                </div>
-              )}
-              {data.byModel !== null && data.byModel.rows.length > 0 && (
-                <div data-testid="quota-by-model" className="rounded-md border border-border bg-card px-3 py-2 text-[length:var(--text-ui-xs)]">
-                  <p className="mb-1 text-foreground-subtle">按模型</p>
-                  {data.byModel.rows.slice(0, 5).map((row) => (
-                    <div key={row.group_key} className="flex items-center justify-between gap-2 py-0.5">
-                      <span className="truncate font-mono text-foreground-subtlest">{row.group_key}</span>
-                      <span className="flex-none font-mono">{formatCost(row.cost)}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
+            <div className="qcard" data-testid="quota-card-date">
+              <div className="qt">
+                今日累计
+                <span className="qv" data-testid="quota-date-total">
+                  {formatCost(dateTotal)} / {formatCost(DEMO_BUDGET.date)}
+                </span>
+              </div>
+              <div className="qbar">
+                <i
+                  data-testid="quota-bar-date"
+                  style={{ width: `${datePct}%`, background: 'var(--color-quota-2)' }}
+                />
+              </div>
+              <div className="qr">
+                <span>次日 00:00 重置</span>
+                <span className="mono">{datePct}%</span>
+              </div>
             </div>
-          )}
+            <div className="qcard" data-testid="quota-card-month">
+              <div className="qt">
+                本月累计
+                <span className="qv" data-testid="quota-month-value">
+                  {formatCost(DEMO_MONTH.used)} / {formatCost(DEMO_MONTH.budget)}
+                </span>
+              </div>
+              <div className="qbar">
+                <i
+                  data-testid="quota-bar-month"
+                  style={{ width: `${DEMO_MONTH.pct}%`, background: 'var(--color-quota-3)' }}
+                />
+              </div>
+              <div className="qr">
+                <span>{DEMO_MONTH.reset}</span>
+                <span className="mono">{DEMO_MONTH.pct}%</span>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>
   );
-}
-
-function sumRows(summary: CostSummary): number {
-  return summary.rows.reduce((total, row) => total + row.cost, 0);
 }

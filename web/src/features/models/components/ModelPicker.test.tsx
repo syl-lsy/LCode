@@ -145,12 +145,12 @@ describe('EffortSelector · 档位随模型过滤置灰（AC-014-3）', () => {
     expect(screen.getByTestId('menu-item-high')).not.toBeDisabled();
   });
 
-  it('选择档位 → PATCH reasoning_effort；触发钮显示中文档位名', async () => {
+  it('选择档位 → PATCH reasoning_effort；触发钮显示中文档位名（F7：medium 呈现为「高」）', async () => {
     const user = userEvent.setup();
     requestLog.length = 0;
     seedModels();
     render(<EffortSelector sessionId={SESSION} />);
-    expect(screen.getByTestId('effort-selector')).toHaveTextContent('中');
+    expect(screen.getByTestId('effort-selector')).toHaveTextContent('高');
 
     await user.click(screen.getByTestId('effort-selector'));
     await user.click(screen.getByTestId('menu-item-high'));
@@ -159,6 +159,42 @@ describe('EffortSelector · 档位随模型过滤置灰（AC-014-3）', () => {
       expect(patch?.body).toMatchObject({ reasoning_effort: 'high' });
     });
     expect(screen.getByTestId('effort-selector')).toHaveTextContent('最高');
+  });
+
+  it('F8 单层菜单：当前 provider 模型平铺（hdr 徽标 + coder 徽标 + 选中勾前置），其他 provider 折叠为 ▸ 占位，管理模型置灰', async () => {
+    const user = userEvent.setup();
+    // 多 provider 列表：mock（当前）+ bigmodel（其他 → ▸ 子菜单占位项）
+    useModelsStore.getState().setFromModelList({
+      default_model: 'mock/qwen/qwen3-flash',
+      models: [
+        ...modelListFixture.models,
+        {
+          id: 'bigmodel/glm/glm-5.3',
+          display_name: 'glm-5.3',
+          provider: 'bigmodel',
+          reasoning_efforts: ['low', 'medium', 'high'],
+          supports_reasoning: true,
+        },
+      ],
+    });
+    render(<ModelSelector sessionId={null} />);
+    await waitFor(() => expect(screen.getByTestId('model-selector')).toHaveTextContent('mock / qwen3-flash'));
+
+    await user.click(screen.getByTestId('model-selector'));
+    const menu = screen.getByTestId('menu-popover');
+    // hdr：provider 名 + 个人徽标（F8 原型口径）
+    expect(within(menu).getByTestId('menu-item-provider-head')).toHaveTextContent('mock');
+    expect(within(menu).getByTestId('menu-item-provider-head')).toHaveTextContent('个人');
+    // coder 模型带徽标、选中项勾在最前（checkFirst）
+    const selectedRow = within(menu).getByTestId('menu-item-mock/qwen/qwen3-coder-plus');
+    expect(within(selectedRow).getByText('coder')).toBeInTheDocument(); // 精确匹配徽标 span
+    expect(within(menu).getByTestId('menu-item-mock/qwen/qwen3-flash').firstChild).toHaveClass('ck');
+    // 其他 provider：置灰 + ▸ 箭头
+    const other = within(menu).getByTestId('menu-item-provider-bigmodel');
+    expect(other).toBeDisabled();
+    expect(within(other).getByText('bigmodel')).toBeInTheDocument();
+    // 管理模型：底部占位禁用
+    expect(within(menu).getByTestId('menu-item-manage-models')).toBeDisabled();
   });
 
   it('列表未含当前模型（会话回声先到）：不伪造能力面，档位不置灰', async () => {

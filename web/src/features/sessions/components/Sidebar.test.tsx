@@ -6,11 +6,14 @@
  */
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { HttpResponse, http } from 'msw';
 import { createMemoryRouter, RouterProvider } from 'react-router';
 import { describe, expect, it } from 'vitest';
 
 import { makeSession, requestLog } from '../../../tests/msw-handlers';
+import { server } from '../../../tests/test-utils';
 import '../../../tests/test-utils';
+import { usePaletteStore } from '@/stores/paletteStore';
 import { useSessionStore } from '../store';
 
 import { Sidebar } from './Sidebar';
@@ -142,5 +145,108 @@ describe('Sidebar · 列表排序与搜索（AC-004-3）', () => {
     renderSidebar();
     expect(screen.getByTestId('session-open')).toHaveTextContent('新会话');
     await waitFor(() => expect(screen.getByTestId('session-count')).toHaveTextContent('1'));
+  });
+});
+
+describe('Sidebar · 原型结构补全（B1：两视图工具条 + 底部导航项占位）', () => {
+  it('视图 tab 切换两组工具条（F9/R3§B）：项目=收起全部/筛选和排序/归档；分组=新建分组/归档', async () => {
+    const user = userEvent.setup();
+    renderSidebar();
+    await waitFor(() => expect(screen.getAllByTestId('session-item')).toHaveLength(3));
+
+    // 默认项目视图（原型 aria-selected 口径）
+    expect(screen.getByTestId('view-tab-proj')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('toolbar-proj')).toBeVisible();
+    expect(screen.getByTestId('toolbar-group')).not.toBeVisible();
+
+    await user.click(screen.getByTestId('view-tab-group'));
+    expect(screen.getByTestId('view-tab-group')).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('toolbar-group')).toBeVisible();
+    expect(within(screen.getByTestId('toolbar-group')).getByTitle('新建分组')).toBeInTheDocument();
+    expect(screen.getByTestId('toolbar-proj')).not.toBeVisible();
+  });
+
+  it('两视图工具条占位（收起全部/筛选和排序/新建分组）+ 底部导航项占位；归档钮为真实入口（F10，B6）', async () => {
+    renderSidebar();
+    await waitFor(() => expect(screen.getAllByTestId('session-item')).toHaveLength(3));
+
+    const placeholders = [
+      ['收起全部', 'toolbar-proj'],
+      ['筛选和排序', 'toolbar-proj'],
+      ['新建分组', 'toolbar-group'],
+    ] as const;
+    for (const [title, scope] of placeholders) {
+      const btn = within(screen.getByTestId(scope)).getByTitle(title);
+      expect(btn).toHaveAttribute('aria-disabled', 'true');
+    }
+    // 归档钮（两视图各一）已是真实入口：非占位，点击进归档模式（见下条用例）
+    expect(within(screen.getByTestId('toolbar-proj')).getByTitle('归档')).not.toHaveAttribute('aria-disabled');
+
+    // 侧栏底部：账号钮（F16 账号菜单触发器，头像 L + lcode）+ 移动端远程控制 + 设置
+    const account = screen.getByTestId('account-button');
+    expect(within(account).getByText('lcode')).toBeInTheDocument();
+    for (const title of ['自动化（P2 占位）', '插件市场（P2 占位）', '移动端远程控制（P2 占位）', '设置（P1 占位）']) {
+      expect(screen.getByTitle(title)).toHaveAttribute('aria-disabled', 'true');
+    }
+  });
+
+  it('归档模式（F10/B6，empty-states #6）：工具条 = 筛选和排序｜归档操作[disabled]｜关闭 + 空态「暂无归档任务」', async () => {
+    const user = userEvent.setup();
+    renderSidebar();
+    await waitFor(() => expect(screen.getAllByTestId('session-item')).toHaveLength(3));
+
+    await user.click(within(screen.getByTestId('toolbar-proj')).getByTestId('archive-toggle'));
+    const archive = screen.getByTestId('archive-mode');
+    expect(archive).toHaveTextContent('暂无归档任务');
+    expect(archive).toHaveTextContent('「归档操作」为批量操作入口，空态禁用。');
+    // F10 工具条三件：筛选和排序（占位）｜归档操作（disabled，官方空态禁用）｜关闭（真实退出）
+    expect(within(archive).getByTitle('筛选和排序（P1 占位）')).toHaveAttribute('aria-disabled', 'true');
+    expect(within(archive).getByText('归档操作')).toBeDisabled();
+    // 归档模式下视图 tab 与列表隐藏
+    expect(screen.queryByTestId('view-tab-group')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('session-item')).not.toBeInTheDocument();
+
+    await user.click(within(archive).getByTestId('archive-close'));
+    expect(screen.queryByTestId('archive-mode')).not.toBeInTheDocument();
+    expect(screen.getAllByTestId('session-item')).toHaveLength(3);
+  });
+
+  it('两视图空态（B6，empty-states #2/#3）：项目视图 = 暂无任务；分组视图 = 还没有任务 + 新建任务真实', async () => {
+    const user = userEvent.setup();
+    requestLog.length = 0;
+    // 空列表：override 列表接口返回空页
+    server.use(
+      http.get('*/api/v1/sessions', () =>
+        HttpResponse.json({ code: '0', message: 'ok', data: { items: [], total: 0 } }),
+      ),
+    );
+    renderSidebar();
+    await waitFor(() => expect(screen.getByTestId('session-list-empty')).toBeInTheDocument());
+
+    // 默认项目视图（F9 口径）→「暂无任务 · 选中项目 root 后…」+ 添加项目占位
+    const projEmpty = screen.getByTestId('session-list-empty');
+    expect(projEmpty).toHaveTextContent('暂无任务');
+    expect(projEmpty).toHaveTextContent('选中项目 root 后，该项目作用域内的任务会出现在这里。');
+    expect(within(projEmpty).getByTitle('添加项目（P1 占位）')).toHaveAttribute('aria-disabled', 'true');
+
+    // 分组视图 →「还没有任务」+ 新建任务钮（真实建会话）
+    await user.click(screen.getByTestId('view-tab-group'));
+    const groupEmpty = screen.getByTestId('session-list-empty');
+    expect(groupEmpty).toHaveTextContent('还没有任务');
+    expect(groupEmpty).toHaveTextContent('新建任务后，这里会按分组展示你的任务与状态。');
+    await user.click(within(groupEmpty).getByTestId('empty-new-task'));
+    await waitFor(() =>
+      expect(requestLog.some((entry) => entry.method === 'POST' && entry.url.endsWith('/sessions'))).toBe(true),
+    );
+  });
+
+  it('搜索钮打开 ⌘K 合并面板（F25：官方搜索钮实测指向标签页切换器）', async () => {
+    const user = userEvent.setup();
+    renderSidebar();
+    await waitFor(() => expect(screen.getAllByTestId('session-item')).toHaveLength(3));
+    expect(usePaletteStore.getState().open).toBe(false);
+    await user.click(screen.getByTestId('sidebar-search'));
+    expect(usePaletteStore.getState().open).toBe(true);
+    usePaletteStore.getState().closePalette();
   });
 });

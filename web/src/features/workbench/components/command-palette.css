@@ -1,0 +1,48 @@
+/* ==========================================================================
+   web/src/features/workbench/components/command-palette.css — ⌘K 面板页面级样式
+   来源：design/prototype/command-palette.html（<style> 页面级类原样迁移）。
+
+   命名空间说明：原型页 .search 与 styles/components.css B5 段（F23 分支切换
+   dialog 搜索行）同名不同值——为不互相覆盖，本页全部类收在根类 .cmdk 之下
+   （.cmdk .dlg 等后代选择器，内部类名与原型逐字一致）。.cmdk-backdrop /
+   .cmdk-stage 是 LCode 新增的浮层外壳（原型为页面级 demo 布局，产品形态需要
+   遮罩 + 居中定位），非原型类。
+
+   未迁移（原型演示脚手架，非产品 UI）：body 舞台布局 / .intro / .note；
+   .scope[aria-selected] 等态随类保留。亮（:root）暗（.dark）双主题逐处核对：
+   全部取值走 var(--*) 语义 token。
+   ========================================================================== */
+
+/* 浮层外壳（LCode 新增）：全屏遮罩点击关闭 + 顶部居中定位（对齐原型 body 90px 顶距） */
+.cmdk-backdrop { position: fixed; inset: 0; z-index: 60; background: color-mix(in oklab, var(--color-background) 55%, transparent); }
+.cmdk-stage { position: absolute; top: 90px; left: 50%; transform: translateX(-50%); width: 100%; max-width: 520px; }
+
+.cmdk .dlg { border: 1px solid var(--color-border-hover); border-radius: var(--radius-xl); background: var(--color-popover);
+             box-shadow: var(--shadow-lg); overflow: hidden; }
+.cmdk .search { display: flex; align-items: center; gap: 9px; padding: 12px 14px; border-bottom: 1px solid var(--color-border); }
+.cmdk .search .ic { color: var(--color-foreground-subtlest); }
+.cmdk .search input { flex: 1; background: none; border: 0; outline: none; font-size: var(--text-ui-sm); color: var(--color-foreground-strong); }
+.cmdk .search input::placeholder { color: var(--color-foreground-subtlest); }
+.cmdk .scopes { display: flex; gap: 4px; padding: 8px 10px 6px; }
+.cmdk .scope { height: 24px; padding: 0 11px; border-radius: 999px; font-size: var(--text-ui-2xs); color: var(--color-foreground-subtle); border: 1px solid transparent; }
+.cmdk .scope:hover { background: var(--color-surface-hover); }
+.cmdk .scope[aria-selected="true"] { color: var(--color-accent-foreground); background: var(--color-accent); border-color: var(--color-accent-border); }
+.cmdk .list { padding: 4px 6px 8px; max-height: 430px; overflow-y: auto; }
+.cmdk .grp { font-size: var(--text-ui-2xs); color: var(--color-foreground-subtlest); padding: 9px 10px 4px; }
+.cmdk .opt { display: flex; align-items: center; gap: 9px; width: 100%; text-align: left; min-height: 32px; padding: 5px 10px;
+             border-radius: var(--radius-sm); font-size: var(--text-ui-sm); color: var(--color-foreground); }
+.cmdk .opt:hover { background: var(--color-surface-hover); }
+.cmdk .opt[aria-selected="true"] { background: var(--color-accent); color: var(--color-accent-foreground); }
+.cmdk .opt .kbd { margin-left: auto; }
+.cmdk .opt .ic { color: var(--color-foreground-subtlest); width: 13px; height: 13px; }
+.cmdk .opt[aria-selected="true"] .ic { color: var(--color-accent-foreground); }
+.cmdk .opt.disabled { color: var(--color-foreground-subtlest); }
+.cmdk .opt.disabled:hover { background: none; }
+/* F5/F25：打开的标签页条目（标题 + 相对时间 + 关闭钮） */
+.cmdk .opt .tt { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cmdk .opt .tm { flex: none; font-family: var(--font-mono); font-size: var(--text-ui-2xs); color: var(--color-foreground-subtlest); }
+.cmdk .opt .x { flex: none; width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center;
+                border-radius: var(--radius-sm); color: var(--color-foreground-subtlest); font-size: var(--text-ui-xs); }
+.cmdk .opt .x:hover { background: var(--color-hover); color: var(--color-foreground-strong); }
+.cmdk .foot { border-top: 1px solid var(--color-border); padding: 8px 12px; display: flex; gap: 14px; font-size: var(--text-ui-2xs); color: var(--color-foreground-subtlest); }
+.cmdk .foot span { display: inline-flex; align-items: center; gap: 5px; }
